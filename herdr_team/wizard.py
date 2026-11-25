@@ -76,8 +76,8 @@ def commit(hub: Path, project: str, drafts: list[Draft], agent_args: list[str]) 
 
 def where(dirs: list[str]) -> str:
     if not dirs:
-        return "리포 없음"
-    first = "./ (이 폴더)" if dirs[0] == "." else dirs[0]
+        return "no repo"
+    first = "./ (this folder)" if dirs[0] == "." else dirs[0]
     return first + (f" +{len(dirs) - 1}" if len(dirs) > 1 else "")
 
 
@@ -97,21 +97,21 @@ def soul_text(hub: Path, d: Draft) -> str:
 
 def bot_preview(hub: Path, d: Draft) -> list[list]:
     b = d.bot
-    rows = [[(b.name or "새 봇", f"bot:{b.name}")],
-            [(b.role, "")] if b.role else [("(목적을 한 문장으로 적어 주세요)", "dim")], []]
-    rows.append([("폴더    ", "dim"), (b.dirs[0] if b.dirs else "봇의 홈 (리포 없음)", ""),
-                 ("  실행 위치" if b.dirs else "", "dim")])
+    rows = [[(b.name or "new bot", f"bot:{b.name}")],
+            [(b.role, "")] if b.role else [("(add a one-sentence purpose)", "dim")], []]
+    rows.append([("Folders       ", "dim"), (b.dirs[0] if b.dirs else "bot's home (no repo)", ""),
+                 ("  runs here" if b.dirs else "", "dim")])
     rows += [[("        ", ""), (x, "")] for x in b.dirs[1:]]
     if has_home(hub, d):
-        kind = [(f"{d.reapply} 템플릿 다시 적용 예정 (Extra 는 유지)", "warn")] if d.reapply else [("SOUL.md", ""), ("  e 로 편집", "dim")]
+        kind = [(f"will re-apply the {d.reapply} template (Extra kept)", "warn")] if d.reapply else [("SOUL.md", ""), ("  e open in editor", "dim")]
     else:
         t = d.template or default_template(b.dirs)
         kind = [(t, ""), (f"  {TEMPLATES.get(t, '')}", "dim")]
-    rows.append([("지침    ", "dim"), *kind])
-    trig = [f"{t.name} · {t.every}" for t in b.triggers] or ["없음"]
-    rows.append([("트리거  ", "dim"), (trig[0], "")])
+    rows.append([("Instructions  ", "dim"), *kind])
+    trig = [f"{t.name} · {t.every}" for t in b.triggers] or ["none"]
+    rows.append([("Triggers      ", "dim"), (trig[0], "")])
     rows += [[("        ", ""), (t, "")] for t in trig[1:]]
-    rows += [[], [("─ 지침 미리보기 ", "dim")]]
+    rows += [[], [("─ instructions preview ", "dim")]]
     body = soul_text(hub, d)
     start = body.find("\n## ")
     for ln in (body[start + 1:] if start >= 0 else "").splitlines():
@@ -122,17 +122,17 @@ def bot_preview(hub: Path, d: Draft) -> list[list]:
 def _changes(old: Bot, d: Draft, touched: set[str]) -> list[str]:
     out = []
     if old.name != d.bot.name:
-        out.append(f"이름 {old.name} → {d.bot.name} (홈 폴더 이동)")
+        out.append(f"name {old.name} → {d.bot.name} (home folder moves)")
     if old.dirs != d.bot.dirs:
-        out.append(f"폴더 {where(old.dirs)} → {where(d.bot.dirs)}")
+        out.append(f"folders {where(old.dirs)} → {where(d.bot.dirs)}")
     if old.role.strip() != d.bot.role.strip():
-        out.append("목적")
+        out.append("purpose")
     if old.triggers != d.bot.triggers:
-        out.append(f"트리거 {len(old.triggers)} → {len(d.bot.triggers)}개")
+        out.append(f"triggers {len(old.triggers)} → {len(d.bot.triggers)}")
     if d.reapply:
-        out.append(f"템플릿 {d.reapply} 다시 적용 (Extra 유지)")
+        out.append(f"re-apply the {d.reapply} template (Extra kept)")
     if old.name in touched:
-        out.append("SOUL.md 직접 편집")
+        out.append("SOUL.md edited")
     return out
 
 
@@ -142,24 +142,24 @@ def change_summary(existing: Team | None, project: str, drafts: list[Draft], tou
     old = {b.name: b for b in existing.bots} if existing else {}
     rows = []
     if existing is None:
-        rows.append([("+ ", "ok"), ("새 팀 ", ""), (project, "bold")])
+        rows.append([("+ ", "ok"), ("new team ", ""), (project, "bold")])
     elif existing.name != project:
-        rows.append([("~ ", "warn"), (f"프로젝트 이름 {existing.name} → {project}", ""),
-                     ("  (에이전트 이름이 바뀌니 팀을 새로 띄워야 합니다)", "dim")])
+        rows.append([("~ ", "warn"), (f"project name {existing.name} → {project}", ""),
+                     ("  (agent names change, so start the team again)", "dim")])
     for d in drafts:
         if d.origin is None or d.origin not in old:
             rows.append([("+ ", "ok"), (d.bot.name, f"bot:{d.bot.name}"),
-                         (f"  봇 추가 · {where(d.bot.dirs)} · {d.template or default_template(d.bot.dirs)} 템플릿", "")])
+                         (f"  new bot · {where(d.bot.dirs)} · {d.template or default_template(d.bot.dirs)} template", "")])
         else:
             changes = _changes(old[d.origin], d, touched)
             if changes:
                 rows.append([("~ ", "warn"), (d.bot.name, f"bot:{d.bot.name}"), ("  " + " · ".join(changes), "")])
     for name in old:
         if name not in {d.origin for d in drafts}:
-            rows.append([("- ", "bad"), (name, "dim"), ("  팀에서 뺌 (홈 폴더의 SOUL.md, MEMORY.md 는 남김)", "")])
+            rows.append([("- ", "bad"), (name, "dim"), ("  removed from the team (SOUL.md and MEMORY.md stay in its home)", "")])
     if instructions_changed:
-        rows.append([("~ ", "warn"), ("팀 공통 지침 수정", ""), ("  (모든 봇과 마스터에 반영)", "dim")])
-    return rows or [[("바뀐 것이 없습니다", "dim")]]
+        rows.append([("~ ", "warn"), ("team instructions changed", ""), ("  (every bot and the master)", "dim")])
+    return rows or [[("Nothing changed", "dim")]]
 
 
 def changed_bots(existing: Team | None, drafts: list[Draft], touched: set[str], instructions_changed: bool) -> list[str]:
@@ -231,8 +231,8 @@ def too_small(win) -> bool:
     if h >= MIN_H and w >= MIN_W:
         return False
     win.erase()
-    safe_addstr(win, 0, 0, "창을 조금 키워 주세요", curses.A_BOLD)
-    safe_addstr(win, 1, 0, f"최소 {MIN_W}x{MIN_H}, 지금 {w}x{h}", color("dim"))
+    safe_addstr(win, 0, 0, "Please enlarge the window", curses.A_BOLD)
+    safe_addstr(win, 1, 0, f"need {MIN_W}x{MIN_H}, now {w}x{h}", color("dim"))
     return True
 
 
@@ -241,10 +241,10 @@ def chrome(win, ui: Ui, crumb: str, hints: list[tuple[str, str]], progress=None)
     win.erase()
     h, w = win.getmaxyx()
     x = put(win, 0, 1, "herdr-team", color("dim"))
-    x = put(win, 0, x, "  팀 편집  ", curses.A_BOLD)
+    x = put(win, 0, x, "  team editor  ", curses.A_BOLD)
     x = put(win, 0, x, ui.project, color("accent", curses.A_BOLD))
-    x = put(win, 0, x, f"  ·  봇 {len(ui.names)}개", color("dim"))
-    state, style = ("* 저장 안 됨", "warn") if ui.dirty else ("✓ 저장됨", "ok")
+    x = put(win, 0, x, f"  ·  {len(ui.names)} bot{'s' if len(ui.names) != 1 else ''}", color("dim"))
+    state, style = ("* unsaved", "warn") if ui.dirty else ("✓ saved", "ok")
     if w - display_width(state) - 2 > x:
         safe_addstr(win, 0, w - display_width(state) - 1, state, attr(ui, style))
     safe_addstr(win, 1, 0, LIGHT[4] * w, color("dim"))
@@ -347,14 +347,14 @@ def input_line(win, ui: Ui, crumb: str, label: str, value: str, validate=None, n
     """One-line field in a panel. Errors show under the field as you type; Enter only passes a valid value."""
     tried = False
     first = not progress or progress[0] == 0
-    hints = [("Enter", "다음" if progress else "확인"), ("Ctrl+U", "지우기"), ("Esc", "취소" if first else "이전 단계")]
+    hints = [("Enter", "next" if progress else "ok"), ("Ctrl+U", "clear"), ("Esc", "cancel" if first else "back")]
     while True:
         error = (validate(value.strip()) if validate and (value.strip() or tried) else None) or ""
         if not too_small(win):
             h, w = win.getmaxyx()
             t, _ = chrome(win, ui, crumb, hints, progress)
             bw = min(w, 80)
-            box(win, t, 0, 8, bw, progress[1][progress[0]] if progress else "입력", True)
+            box(win, t, 0, 8, bw, progress[1][progress[0]] if progress else "Input", True)
             safe_addstr(win, t + 1, 2, clip(label, min(display_width(label), bw - 4)), curses.A_BOLD)
             shown = value
             while display_width(shown) > bw - 8:
@@ -394,12 +394,12 @@ def confirm_in(win, ui: Ui, crumb: str, question: str) -> bool:
     while True:
         if not too_small(win):
             h, w = win.getmaxyx()
-            t, b = chrome(win, ui, crumb, [("y", "예"), ("n", "아니오"), ("Esc", "아니오")])
+            t, b = chrome(win, ui, crumb, [("y", "yes"), ("n", "no"), ("Esc", "no")])
             bw = min(w - 4, 64)
             lines = wrap(question, bw - 4)
             bh = len(lines) + 4
             y, x = max(t, t + (b - t - bh) // 2), (w - bw) // 2
-            box(win, y, x, bh, bw, "확인", True)
+            box(win, y, x, bh, bw, "Confirm", True)
             for i, line in enumerate(lines):
                 safe_addstr(win, y + 2 + i, x + 2, line)
         win.refresh()
@@ -419,7 +419,7 @@ def open_editor(win, path: Path) -> str:
     try:
         subprocess.call([*shlex.split(editor), str(path)])
     except (OSError, ValueError) as e:
-        error = f"편집기를 열지 못했습니다 ({editor}): {e}"
+        error = f"Could not open the editor ({editor}): {e}"
     finally:
         curses.reset_prog_mode()
         curses.curs_set(0)
@@ -453,21 +453,21 @@ def edit_folders(win, ui: Ui, crumb: str, name: str, dirs: list[str], progress=N
 
     def preview(_):
         chosen = [d for d, c in zip(items, on) if c]
-        rows = [[("실행 위치  ", "dim"), (chosen[0] if chosen else "봇의 홈 폴더 (리포 없음)", "bold")]]
-        rows += [[("추가 폴더  " if i == 0 else "           ", "dim"), (d, "")] for i, d in enumerate(chosen[1:])]
-        rows += [[], [("0개를 고르면 리포 없이 자기 홈에서 일하는 봇이 된다.", "dim")],
-                 [("같은 리포를 여러 봇이 봐도 된다.", "dim")]]
-        return "고른 폴더", rows
+        rows = [[("Runs in    ", "dim"), (chosen[0] if chosen else "the bot's home folder (no repo)", "bold")]]
+        rows += [[("Also sees  " if i == 0 else "           ", "dim"), (d, "")] for i, d in enumerate(chosen[1:])]
+        rows += [[], [("Pick none for a bot with no repo that works in its home.", "dim")],
+                 [("Several bots may share a repo.", "dim")]]
+        return "Selected folders", rows
 
     while True:
         chosen = [d for d, c in zip(items, on) if c]
-        rows = [[("./ (이 폴더)" if d == "." else d, ""), ("  실행 위치" if chosen and d == chosen[0] else "", "ok")]
-                for d in items] or [[("찾은 리포가 없습니다. a 로 경로를 추가하세요", "dim")]]
+        rows = [[("./ (this folder)" if d == "." else d, ""), ("  runs here" if chosen and d == chosen[0] else "", "ok")]
+                for d in items] or [[("No repos found. Press a to add a path", "dim")]]
         last = progress and progress[0] == len(progress[1]) - 1
-        key, cur = select(win, ui, crumb, f"{name} 가 볼 폴더", rows,
-                          [("Space", "선택"), ("f", "실행 위치로"), ("a", "경로 추가"),
-                           ("Enter", "완료" if not progress or last else "다음"),
-                           ("Esc", "취소" if not progress or progress[0] == 0 else "이전 단계")],
+        key, cur = select(win, ui, crumb, f"Folders for {name}", rows,
+                          [("Space", "select"), ("f", "run here"), ("a", "add path"),
+                           ("Enter", "done" if not progress or last else "next"),
+                           ("Esc", "cancel" if not progress or progress[0] == 0 else "back")],
                           keys="fa", cur=cur, preview=preview, checked=on if items else None,
                           message=message, progress=progress)
         message = ""
@@ -479,8 +479,8 @@ def edit_folders(win, ui: Ui, crumb: str, name: str, dirs: list[str], progress=N
             items, on = move_first(items, cur), move_first(on, cur)
             on[0], cur = True, 0
         elif key == "a":
-            path = input_line(win, ui, crumb + " / 폴더 추가", "폴더 경로 (허브 기준 상대 경로 또는 절대 경로)", "",
-                              lambda v: None if v and (ui.hub / Path(v).expanduser()).is_dir() else "존재하는 폴더를 입력하세요")
+            path = input_line(win, ui, crumb + " / add folder", "Folder path (relative to the hub, or absolute)", "",
+                              lambda v: None if v and (ui.hub / Path(v).expanduser()).is_dir() else "Enter a folder that exists")
             if path:
                 full = (ui.hub / Path(path).expanduser()).resolve()
                 ref = repo_ref(ui.hub, full) if full == ui.hub or full.parent == ui.hub else str(full)
@@ -495,19 +495,19 @@ def _slug_ok(v: str) -> bool:
 
 
 def edit_trigger(win, ui: Ui, crumb: str, trig: Trigger, others: list[str]) -> Trigger | None:
-    names = ["이름", "간격", "명령", "지시"]
+    names = ["Name", "Every", "Command", "Prompt"]
 
     def field_(label, default, validate, note=""):
         return lambda vals, i: input_line(win, ui, crumb, label, vals[i] if vals[i] is not None else default,
                                           validate, note, (i, names, vals))
     got = run_steps([
-        field_("트리거 이름 (소문자·숫자·-·_)", trig.name,
-               lambda v: None if _slug_ok(v) and v not in others else "소문자·숫자·-·_ 로, 다른 트리거와 겹치지 않게"),
-        field_("얼마나 자주 확인할까 (30s, 10m, 2h, 1d)", trig.every or "10m",
-               lambda v: None if parse_every(v) else "30s, 10m, 2h, 1d 형식입니다"),
-        field_("확인할 명령 (허브 폴더에서 실행. 출력이 바뀌면 봇에게 일이 간다)", trig.run,
-               lambda v: None if v else "명령이 필요합니다", "예: gh pr list --search 'review-requested:@me' --json number,title"),
-        field_("출력이 바뀌었을 때 봇에게 줄 지시", trig.prompt, lambda v: None if v else "지시가 필요합니다"),
+        field_("Trigger name (a-z, 0-9, -, _)", trig.name,
+               lambda v: None if _slug_ok(v) and v not in others else "Use a-z, 0-9, - and _, unique among triggers"),
+        field_("How often to check (30s, 10m, 2h, 1d)", trig.every or "10m",
+               lambda v: None if parse_every(v) else "Use 30s, 10m, 2h or 1d"),
+        field_("Command to check (runs in the hub; new output gives the bot a task)", trig.run,
+               lambda v: None if v else "A command is required", "e.g. gh pr list --search 'review-requested:@me' --json number,title"),
+        field_("Prompt for the bot when the output changes", trig.prompt, lambda v: None if v else "A prompt is required"),
     ])
     return Trigger(*got) if got else None
 
@@ -517,28 +517,28 @@ def edit_triggers(win, ui: Ui, crumb: str, bot: Bot) -> None:
 
     def preview(i):
         if i >= len(bot.triggers):
-            return "트리거", [[("명령을 주기적으로 실행하고, 출력이 바뀌면", "dim")], [("봇에게 지시와 출력을 작업으로 보낸다.", "dim")]]
+            return "Triggers", [[("Runs a command on a schedule. When its output", "dim")], [("changes, the bot gets the prompt and output as a task.", "dim")]]
         t = bot.triggers[i]
-        return t.name, [[("간격  ", "dim"), (t.every, "")], [("명령  ", "dim"), (t.run, "")], [],
-                        [("지시", "dim")], *[[(ln, "")] for ln in wrap(t.prompt, 60)]]
+        return t.name, [[("Every    ", "dim"), (t.every, "")], [("Command  ", "dim"), (t.run, "")], [],
+                        [("Prompt", "dim")], *[[(ln, "")] for ln in wrap(t.prompt, 60)]]
     while True:
         rows = [[(clip(t.name, 18) + " ", "bold"), (clip(t.every, 5) + " ", "dim"), (t.run, "")] for t in bot.triggers]
-        rows += [[("+ 트리거 추가", "accent")]]
-        key, cur = select(win, ui, crumb + " / 트리거", "트리거 — 명령의 출력이 바뀌면 봇에게 일이 간다", rows,
-                          [("Enter", "편집"), ("n", "추가"), ("d", "삭제"), ("Esc", "돌아가기")],
+        rows += [[("+ add trigger", "accent")]]
+        key, cur = select(win, ui, crumb + " / triggers", "Triggers — new command output gives the bot a task", rows,
+                          [("Enter", "edit"), ("n", "add"), ("d", "delete"), ("Esc", "back")],
                           keys="nd", cur=cur, preview=preview)
         if key == "esc":
             return
         if key == "d" and cur < len(bot.triggers):
             del bot.triggers[cur]
         elif key == "n" or (key == "enter" and cur == len(bot.triggers)):
-            t = edit_trigger(win, ui, crumb + " / 새 트리거", Trigger("", "10m", "", ""), [t.name for t in bot.triggers])
+            t = edit_trigger(win, ui, crumb + " / new trigger", Trigger("", "10m", "", ""), [t.name for t in bot.triggers])
             if t:
                 bot.triggers.append(t)
                 cur = len(bot.triggers) - 1
         elif key == "enter":
             others = [t.name for i, t in enumerate(bot.triggers) if i != cur]
-            t = edit_trigger(win, ui, crumb + " / 트리거", bot.triggers[cur], others)
+            t = edit_trigger(win, ui, crumb + " / trigger", bot.triggers[cur], others)
             if t:
                 bot.triggers[cur] = t
 
@@ -552,10 +552,10 @@ def pick_template(win, ui: Ui, crumb: str, name: str, current: str, progress=Non
         for ln in template_preview(ids[i], 14):
             lines += [[]] if ln.startswith("## ") and lines else []
             lines.append([(ln, "bold" if ln.startswith("## ") else "")])
-        return f"{ids[i]} 템플릿", lines + [[], [("## Extra — 이 봇만의 지침. 저장 뒤 e 로 적는다.", "dim")]]
+        return f"{ids[i]} template", lines + [[], [("## Extra — this bot's own instructions; add them with e after saving.", "dim")]]
     first = not progress or progress[0] == 0
-    key, cur = select(win, ui, crumb, f"{name} 의 지침 템플릿", rows,
-                      [("Enter", "선택"), ("Esc", "취소" if first else "이전 단계")],
+    key, cur = select(win, ui, crumb, f"Template for {name}", rows,
+                      [("Enter", "select"), ("Esc", "cancel" if first else "back")],
                       cur=ids.index(current) if current in ids else 0, preview=preview, progress=progress)
     return None if key == "esc" else ids[cur]
 
@@ -568,26 +568,26 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
     while True:
         home = has_home(ui.hub, d)
         if home and d.reapply:
-            soul = [(f"{d.reapply} 템플릿 다시 적용 예정", "warn")]
+            soul = [(f"will re-apply the {d.reapply} template", "warn")]
         elif home:
-            soul = [("SOUL.md", ""), ("  e 직접 편집 · Enter 템플릿 다시 적용", "dim")]
+            soul = [("SOUL.md", ""), ("  e open in editor · Enter re-apply a template", "dim")]
         else:
             t = d.template or default_template(bot.dirs)
             soul = [(t, ""), (f"  {TEMPLATES.get(t, '')}", "dim")]
         rows = [
-            [("이름      ", "dim"), (bot.name, f"bot:{bot.name}")],
-            [("볼 폴더   ", "dim"), (where(bot.dirs), "")],
-            [("목적      ", "dim"), (bot.role, "")] if bot.role else [("목적      ", "dim"), ("(한 문장으로 적어 주세요)", "warn")],
-            [("지침      ", "dim"), *soul],
-            [("트리거    ", "dim"), (f"{len(bot.triggers)}개", ""),
+            [("Name          ", "dim"), (bot.name, f"bot:{bot.name}")],
+            [("Folders       ", "dim"), (where(bot.dirs), "")],
+            [("Purpose       ", "dim"), (bot.role, "")] if bot.role else [("Purpose       ", "dim"), ("(add one sentence)", "warn")],
+            [("Instructions  ", "dim"), *soul],
+            [("Triggers      ", "dim"), (f"{len(bot.triggers)}", ""),
              (f"  {', '.join(t.name for t in bot.triggers)}" if bot.triggers else "", "dim")],
             [],
-            [("✓ 완료", "ok")],
+            [("✓ done", "ok")],
         ]
-        crumb = f"팀 / {bot.name or '새 봇'}"
-        key, cur = select(win, ui, crumb, "봇 편집", rows,
-                          [("Enter", "편집"), ("e", "SOUL.md 편집기로"), ("s", "완료"), ("Esc", "취소")],
-                          keys="se", cur=cur, preview=lambda _: ("미리보기", bot_preview(ui.hub, d)), message=message)
+        crumb = f"team / {bot.name or 'new bot'}"
+        key, cur = select(win, ui, crumb, "Edit bot", rows,
+                          [("Enter", "edit"), ("e", "open in editor"), ("s", "done"), ("Esc", "cancel")],
+                          keys="se", cur=cur, preview=lambda _: ("Preview", bot_preview(ui.hub, d)), message=message)
         message = ""
         if key == "esc":
             return None
@@ -599,7 +599,7 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
             return d
         if key == "e":
             if not home:
-                message = "새 봇의 SOUL.md 는 저장한 뒤에 생긴다. 지금은 오른쪽 미리보기로 확인하세요."
+                message = "A new bot gets its SOUL.md when you save. Use the preview for now."
             else:
                 message = open_editor(win, bot_home(ui.hub, d.origin) / "SOUL.md")
                 touched.add(d.origin)
@@ -608,26 +608,26 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
         if key != "enter":
             continue
         if cur == 0:
-            got = input_line(win, ui, crumb + " / 이름", "봇 이름 (에이전트 이름은 <프로젝트>-<봇>)", bot.name,
+            got = input_line(win, ui, crumb + " / name", "Bot name (the agent is named <project>-<bot>)", bot.name,
                              lambda v: bot_name_error(project, v, others))
             if got is not None:
                 bot.name = got
         elif cur == 1:
-            got = edit_folders(win, ui, crumb + " / 볼 폴더", bot.name, bot.dirs)
+            got = edit_folders(win, ui, crumb + " / folders", bot.name, bot.dirs)
             if got is not None:
                 bot.dirs = got
         elif cur == 2:
-            got = input_line(win, ui, crumb + " / 목적", "무엇을 위한 봇인가 (한 문장. SOUL.md 첫 문단이 된다)", bot.role)
+            got = input_line(win, ui, crumb + " / purpose", "What is this bot for? (one sentence; it opens SOUL.md)", bot.role)
             if got is not None:
                 bot.role = got
         elif cur == 3 and not home:
-            got = pick_template(win, ui, crumb + " / 템플릿", bot.name, d.template or default_template(bot.dirs))
+            got = pick_template(win, ui, crumb + " / template", bot.name, d.template or default_template(bot.dirs))
             if got is not None:
                 d.template = got
         elif cur == 3:
-            got = pick_template(win, ui, crumb + " / 템플릿 다시 적용", bot.name, d.reapply or default_template(bot.dirs))
-            if got is not None and confirm_in(win, ui, crumb, f"SOUL.md 의 템플릿 부분(How I work, Never)을 {got} 템플릿으로 "
-                                                              "바꿀까요? 제목, 목적, ## Extra 절은 그대로 남습니다."):
+            got = pick_template(win, ui, crumb + " / re-apply template", bot.name, d.reapply or default_template(bot.dirs))
+            if got is not None and confirm_in(win, ui, crumb, f"Replace the template part of SOUL.md (How I work, Never) with the {got} "
+                                                              "template? The title, purpose and ## Extra stay."):
                 d.reapply = got
         elif cur == 4:
             edit_triggers(win, ui, crumb, bot)
@@ -635,11 +635,11 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
 
 def new_bot(win, ui: Ui, project: str, others: list[str]) -> Draft | None:
     """Step form: name → folders → template → purpose. Esc goes back a step."""
-    names = ["이름", "폴더", "템플릿", "목적"]
-    crumb = "팀 / 새 봇"
+    names = ["Name", "Folders", "Template", "Purpose"]
+    crumb = "team / new bot"
 
     def name_step(vals, i):
-        return input_line(win, ui, crumb, "봇 이름 (예: api, reviewer, scout)", vals[0] or "",
+        return input_line(win, ui, crumb, "Bot name (e.g. api, reviewer, scout)", vals[0] or "",
                           lambda v: bot_name_error(project, v, others), progress=(i, names, vals))
 
     def dirs_step(vals, i):
@@ -652,14 +652,14 @@ def new_bot(win, ui: Ui, project: str, others: list[str]) -> Draft | None:
     def role_step(vals, i):
         guess = guess_role(resolve_repo(ui.hub, vals[1][0])) if vals[1] else ""
         shown = [vals[0], where(vals[1]), vals[2], None]
-        return input_line(win, ui, crumb, "무엇을 위한 봇인가 (한 문장. 명단과 현황판에 나온다)", vals[3] or guess,
-                          note="비워 두면 나중에 봇 편집에서 적을 수 있다.", progress=(i, names, shown))
+        return input_line(win, ui, crumb, "What is this bot for? (one sentence; shown in the roster and on the board)", vals[3] or guess,
+                          note="Leave it empty to fill in later from the bot editor.", progress=(i, names, shown))
     got = run_steps([name_step, dirs_step, template_step, role_step])
     return Draft(Bot(got[0], got[1], got[3]), got[2], None) if got else None
 
 
 def review(win, ui: Ui, rows: list[list]) -> bool:
-    key, _ = select(win, ui, "팀 / 저장", "저장하기 전에 확인", rows, [("s", "저장"), ("Enter", "저장"), ("Esc", "돌아가기")],
+    key, _ = select(win, ui, "team / save", "Review before saving", rows, [("s", "save"), ("Enter", "save"), ("Esc", "back")],
                     keys="s")
     return key in ("s", "enter")
 
@@ -689,51 +689,51 @@ def team_screen(win, hub: Path) -> Saved | None:
     touched: set[str] = set()
     cur, message = 3, ""
     if not drafts:
-        message = "리포를 찾지 못했습니다. n 으로 봇을 추가하세요 (리포 없이 조사만 하는 봇도 됩니다)."
+        message = "No repos found. Press n to add a bot (a bot with no repo works too)."
     first = 3   # rows: project, team instructions, separator, bots..., add, separator, save
     while True:
         ui.project, ui.names = project, [d.bot.name for d in drafts]
         instr = user_instructions(hub)
-        rows = [[("프로젝트      ", "dim"), (project, "accent")],
-                [("팀 공통 지침  ", "dim"), (f"{len(instr.splitlines())}줄" if instr else "비어 있음", "" if instr else "dim"),
-                 ("  모든 봇과 마스터에게", "dim")],
+        rows = [[("Project       ", "dim"), (project, "accent")],
+                [("Instructions  ", "dim"), (f"{len(instr.splitlines())} line{'s' if len(instr.splitlines()) != 1 else ''}" if instr else "empty", "" if instr else "dim"),
+                 ("  for every bot and the master", "dim")],
                 []]
         rows += [[(clip(d.bot.name, 14) + " ", f"bot:{d.bot.name}"), (clip(where(d.bot.dirs), 16) + " ", "dim"),
-                  (d.bot.role or "(목적 없음)", "" if d.bot.role else "warn"),
-                  (f"  트리거 {len(d.bot.triggers)}" if d.bot.triggers else "", "dim")] for d in drafts]
+                  (d.bot.role or "(no purpose)", "" if d.bot.role else "warn"),
+                  (f"  triggers {len(d.bot.triggers)}" if d.bot.triggers else "", "dim")] for d in drafts]
         add_row = first + len(drafts)
         save_row = add_row + 2
-        rows += [[("+ 봇 추가", "accent")], [], [("✓ 저장하고 끝내기", "ok")]]
+        rows += [[("+ add bot", "accent")], [], [("✓ save and quit", "ok")]]
 
         def preview(i):
             if first <= i < add_row:
-                return "미리보기", bot_preview(hub, drafts[i - first])
+                return "Preview", bot_preview(hub, drafts[i - first])
             if i == 0:
-                return "프로젝트", [[("에이전트 이름  ", "dim"), (agent_name(project, "master"), "")],
-                                    [("               ", ""), (agent_name(project, "<봇>"), "")],
-                                    [("허브           ", "dim"), (str(hub), "")],
-                                    [("agent_args     ", "dim"), (" ".join(agent_args) or "없음", "")]]
+                return "Project", [[("Agent names    ", "dim"), (agent_name(project, "master"), "")],
+                                    [("               ", ""), (agent_name(project, "<bot>"), "")],
+                                    [("Hub            ", "dim"), (str(hub), "")],
+                                    [("agent_args     ", "dim"), (" ".join(agent_args) or "none", "")]]
             if i == 1:
-                body = [[(ln, "")] for ln in instr.splitlines()] or [[("아직 비어 있습니다.", "dim")]]
-                return "팀 공통 지침", body + [[], [("모든 봇의 지침과 마스터 프롬프트에 사용자 지침으로 들어간다.", "dim")],
-                                               [("Enter 또는 e 로 편집기에서 연다. 예: 보고하기 전에 테스트를 돌린다.", "dim")]]
-            return "팀", [[(f"봇 {len(drafts)}개", "bold")], [],
-                          [("봇마다 지침은 템플릿 + SOUL.md 의 ## Extra 절,", "dim")],
-                          [("팀 전체 지침은 팀 공통 지침에 적는다.", "dim")]]
-        key, cur = select(win, ui, "팀", "팀", rows,
-                          [("Enter", "편집"), ("n", "봇 추가"), ("d", "빼기"), ("e", "공통 지침 편집"),
-                           ("s", "저장"), ("Esc", "나가기")],
+                body = [[(ln, "")] for ln in instr.splitlines()] or [[("Empty for now.", "dim")]]
+                return "Team instructions", body + [[], [("Sent to every bot and the master as user instructions.", "dim")],
+                                               [("Enter or e opens it in your editor. e.g. run tests before reporting.", "dim")]]
+            return "Team", [[(f"{len(drafts)} bot{'s' if len(drafts) != 1 else ''}", "bold")], [],
+                          [("Per-bot instructions: template + ## Extra in SOUL.md.", "dim")],
+                          [("Instructions for everyone: Instructions row above.", "dim")]]
+        key, cur = select(win, ui, "team", "Team", rows,
+                          [("Enter", "edit"), ("n", "add"), ("d", "remove"), ("e", "instructions"),
+                           ("s", "save"), ("Esc", "quit")],
                           keys="ndse", cur=cur, preview=preview, message=message)
         message = ""
         names = [d.bot.name for d in drafts]
         if key == "esc":
-            if not ui.dirty or confirm_in(win, ui, "팀 / 나가기", "저장하지 않은 팀 변경(봇, 폴더, 이름 등)을 버리고 나갈까요? "
-                                                                 "e 로 고친 파일은 이미 저장돼 있습니다."):
+            if not ui.dirty or confirm_in(win, ui, "team / quit", "Quit and discard unsaved team changes (bots, folders, names)? "
+                                                                 "Files you edited with e are already saved."):
                 return None
         elif key == "s" or (key == "enter" and cur == save_row):
             problems = team_problems(project, [d.bot for d in drafts])
             if problems:
-                message = "저장할 수 없습니다: " + problems[0]
+                message = "Can't save: " + problems[0]
                 continue
             instructions_changed = user_instructions(hub) != instructions_before
             if not review(win, ui, change_summary(existing, project, drafts, touched, instructions_changed)):
@@ -753,12 +753,12 @@ def team_screen(win, hub: Path) -> Saved | None:
                 ui.dirty, cur = True, first + len(drafts) - 1
         elif key == "d" and first <= cur < add_row:
             name = drafts[cur - first].bot.name
-            if confirm_in(win, ui, "팀 / 빼기", f"{name} 을 팀에서 뺄까요? 홈 폴더의 SOUL.md, MEMORY.md 는 남습니다."):
+            if confirm_in(win, ui, "team / remove", f"Remove {name} from the team? SOUL.md and MEMORY.md stay in its home folder."):
                 del drafts[cur - first]
                 ui.dirty = True
         elif key == "enter" and cur == 0:
-            got = input_line(win, ui, "팀 / 프로젝트", "프로젝트 이름 (에이전트 이름 앞에 붙는다)", project,
-                             lambda v: name_error(agent_name(v, "master")) if v else "이름이 비어 있습니다")
+            got = input_line(win, ui, "team / project", "Project name (prefix of every agent name)", project,
+                             lambda v: name_error(agent_name(v, "master")) if v else "Name is empty")
             if got and got != project:
                 project, ui.dirty = got, True
         elif key == "enter" and first <= cur < add_row:
@@ -785,11 +785,11 @@ def run_wizard(hub: Path) -> int:
     except KeyboardInterrupt:
         saved = None
     if saved is None:
-        print("저장하지 않고 나왔습니다.")
+        print("Quit without saving.")
         return 1
     team = saved.team
-    print(f"저장: {hub / 'herdr-team.toml'} (봇 {len(team.bots)}개)")
-    print(f"팀 공통 지침: {hub / '.herdr-team' / 'instructions.md'} · 봇 지침: {hub / '.herdr-team' / 'bots'}/<봇>/SOUL.md")
+    print(f"Saved: {hub / 'herdr-team.toml'} ({len(team.bots)} bot{'s' if len(team.bots) != 1 else ''})")
+    print(f"Team instructions: {hub / '.herdr-team' / 'instructions.md'} · bot instructions: {hub / '.herdr-team' / 'bots'}/<bot>/SOUL.md")
     try:
         live = team_mod.live_agents()
     except herdr.HerdrError:
@@ -798,19 +798,19 @@ def run_wizard(hub: Path) -> int:
     try:
         if not running:
             if saved.renamed_project:
-                print("프로젝트 이름이 바뀌었습니다. 예전 이름의 워크스페이스가 떠 있다면 닫아 주세요.")
-            return team_mod.up(hub) if confirm("지금 팀을 띄울까요?") else 0
+                print("The project name changed. If a workspace with the old name is open, close it.")
+            return team_mod.up(hub) if confirm("Start the team now?") else 0
         for name in saved.gone:
             if agent_name(team.name, name) in live:
-                print(f"{agent_name(team.name, name)}: 이름을 바꿨거나 팀에서 뺀 봇이 아직 떠 있습니다. 그 창에서 /exit 하세요.")
+                print(f"{agent_name(team.name, name)}: renamed or removed but still running. Type /exit in its pane.")
         if saved.instructions_changed:
-            print("마스터에 팀 공통 지침을 반영하려면 마스터 창에서 /exit 한 뒤 team-up 액션(권장 키 prefix+shift+u)을 실행하세요.")
+            print("To give the master the new team instructions, type /exit in its pane, then run the team-up action (suggested key prefix+shift+u).")
         if not saved.changed:
             return 0
-        if confirm(f"바뀐 봇을 다시 띄울까요? ({', '.join(saved.changed)})"):
+        if confirm(f"Restart the changed bots? ({', '.join(saved.changed)})"):
             return team_mod.restart(hub, saved.changed)
-        print(f"나중에 반영하려면: herdr-team restart {' '.join(saved.changed)}")
+        print(f"To apply later: herdr-team restart {' '.join(saved.changed)}")
         return 0
     except herdr.HerdrError as e:
-        print(f"herdr 오류: {e.message}")
+        print(f"herdr error: {e.message}")
         return 1

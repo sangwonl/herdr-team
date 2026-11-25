@@ -29,21 +29,21 @@ def agent_name(project: str, bot: str) -> str:
 
 def bot_name_error(project: str, name: str, others: list[str]) -> str | None:
     if not name:
-        return "이름이 비어 있습니다"
+        return "Name is empty"
     if name in ("master", "watch"):
-        return f"{name} 는 herdr-team 이 쓰는 이름입니다"
+        return f"{name} is reserved by herdr-team"
     if name in others:
-        return f"이미 쓰는 이름입니다: {name}"
+        return f"Name already in use: {name}"
     return name_error(agent_name(project, name))
 
 
 def name_error(name: str) -> str | None:
     if not name:
-        return "이름이 비어 있습니다"
+        return "Name is empty"
     if len(name) > 32:
-        return f"이름이 너무 깁니다 ({len(name)}자, 최대 32자): {name}"
+        return f"Name too long ({len(name)} chars, max 32): {name}"
     if not NAME_RE.match(name):
-        return "소문자로 시작하고 소문자·숫자·-·_ 만 쓸 수 있습니다"
+        return "Start with a lowercase letter; use only a-z, 0-9, - and _"
     return None
 
 
@@ -98,7 +98,7 @@ def _write_atomic(path: Path, text: str) -> None:
 def save_team(team: Team) -> None:
     """Write the spec and make sure every bot has a home (its purpose lives in SOUL.md)."""
     if not team.bots:
-        raise ValueError("봇이 하나도 없습니다")
+        raise ValueError("no bots")
     for bot in team.bots:
         ensure_home(team.hub, bot)
     _write_atomic(team.hub / SPEC_FILE, dump_team(team))
@@ -116,33 +116,33 @@ def _parse_team(hub: Path) -> Team:
 
     def strings(value, what: str) -> list[str]:
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-            raise ValueError(f"{what} 는 문자열 목록이어야 합니다")
+            raise ValueError(f"{what} must be a list of strings")
         return value
 
     project = data.get("name")
     if not isinstance(project, str) or name_error(agent_name(project, "master")):
-        raise ValueError(f"프로젝트 이름(name)이 올바르지 않습니다: {project!r}")
+        raise ValueError(f"invalid project name: {project!r}")
     bots, seen = [], set()
     raw_bots = data.get("bots", [])
     if not isinstance(raw_bots, list) or not all(isinstance(b, dict) for b in raw_bots):
-        raise ValueError("bots 항목이 올바르지 않습니다")
+        raise ValueError("invalid bots entry")
     for b in raw_bots:
         name = b.get("name")
         # The name becomes a folder and a herdr agent name, so it must be a plain slug.
         if not isinstance(name, str) or name in RESERVED or name in seen or name_error(agent_name(project, name)) \
                 or not NAME_RE.match(name):
-            raise ValueError(f"봇 이름이 올바르지 않습니다: {name!r}")
+            raise ValueError(f"invalid bot name: {name!r}")
         seen.add(name)
         if "dirs" in b:
-            dirs = strings(b["dirs"], f"{name} 의 dirs")
+            dirs = strings(b["dirs"], f"dirs of {name}")
         else:
-            dirs = strings([b["repo"]], f"{name} 의 repo") if "repo" in b else []   # `repo` is the v1 key
+            dirs = strings([b["repo"]], f"repo of {name}") if "repo" in b else []   # `repo` is the v1 key
         triggers = []
         for t in b.get("triggers", []) if isinstance(b.get("triggers", []), list) else [None]:
             if not isinstance(t, dict) or not all(isinstance(t.get(k), str) for k in ("name", "every", "run", "prompt")):
-                raise ValueError(f"{name} 의 triggers 는 name, every, run, prompt 를 문자열로 가져야 합니다")
+                raise ValueError(f"triggers of {name} need string name, every, run and prompt")
             if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", t["name"]):
-                raise ValueError(f"트리거 이름이 올바르지 않습니다 (소문자·숫자·-·_): {t['name']!r}")
+                raise ValueError(f"invalid trigger name (a-z, 0-9, -, _): {t['name']!r}")
             triggers.append(Trigger(t["name"], t["every"], t["run"], t["prompt"]))
         soul = _read(bot_home(hub, name) / "SOUL.md")
         role = soul_description(soul) if soul else str(b.get("role", ""))  # `role` is the v1 key
@@ -166,7 +166,7 @@ def spec_error(hub: Path) -> str | None:
         _parse_team(hub)
         return None
     except ValueError as e:
-        return f"{path} 을 쓸 수 없습니다: {e}"
+        return f"can't use {path}: {e}"
 
 
 def find_hub(start: Path) -> Path | None:
@@ -209,11 +209,11 @@ def ensure_instructions(hub: Path) -> Path:
 
 
 INSTRUCTIONS_STARTER = """<!--
-팀 공통 지침. 여기 적은 것은 모든 봇과 마스터에게 사용자 지침으로 전달된다 (다시 띄운 뒤부터).
-예:
-- 보고하기 전에 항상 테스트를 돌리고 결과를 적는다.
-- 커밋 메시지는 영어로 쓴다.
-이 주석만 있으면 아무것도 전달되지 않는다.
+Team-wide instructions. Whatever you write here goes to every bot and the master
+as user instructions (after they restart). For example:
+- Always run the tests before reporting, and include the result.
+- Write commit messages in English.
+While this file holds only this comment, nothing is sent.
 -->
 """
 
@@ -243,11 +243,11 @@ def _read(path: Path) -> str:
 # ---- bot home: SOUL.md, MEMORY.md, PREAMBLE.md --------------------------------
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
-_LABELS = {"developer": "개발자 (코드를 짜고 테스트로 확인)", "frontend": "프론트엔드 (화면, 접근성, 브라우저)",
-           "backend": "백엔드 (API, 저장소, 성능)", "devops": "데브옵스 (빌드, 배포, 인프라)",
-           "qa": "QA (테스트 설계와 재현)", "security": "보안 (취약점 점검)", "data": "데이터 (분석과 파이프라인)",
-           "repo-owner": "리포 담당 (한 리포를 책임지고 관리)", "reviewer": "리뷰어 (고치지 않고 지적만)",
-           "writer": "테크니컬 라이터 (문서와 설명)", "researcher": "조사 담당 (리포 없음)"}
+_LABELS = {"developer": "Developer (writes code, checks with tests)", "frontend": "Frontend (UI, accessibility, browsers)",
+           "backend": "Backend (APIs, storage, performance)", "devops": "DevOps (build, deploy, infra)",
+           "qa": "QA (test design and repro)", "security": "Security (finds vulnerabilities)", "data": "Data (analysis and pipelines)",
+           "repo-owner": "Repo owner (owns one repo)", "reviewer": "Reviewer (points out, doesn't fix)",
+           "writer": "Technical writer (docs and explanations)", "researcher": "Researcher (no repo)"}
 
 
 def _templates() -> dict[str, str]:
@@ -255,7 +255,7 @@ def _templates() -> dict[str, str]:
     order = list(_LABELS)
     ids = sorted((p.stem for p in TEMPLATE_DIR.glob("*.md")),
                  key=lambda t: (t == "blank", order.index(t) if t in order else len(order), t))
-    return {t: _LABELS.get(t, "빈 템플릿" if t == "blank" else t) for t in ids}
+    return {t: _LABELS.get(t, "Blank" if t == "blank" else t) for t in ids}
 
 
 TEMPLATES = _templates()
@@ -317,22 +317,22 @@ def team_problems(project: str, bots: list[Bot]) -> list[str]:
     """Everything that would stop the team from being saved, in words for the user."""
     problems = []
     if not project or name_error(agent_name(project, "master")):
-        problems.append(f"프로젝트 이름이 올바르지 않습니다: {project!r}")
+        problems.append(f"Invalid project name: {project!r}")
     if not bots:
-        problems.append("봇이 하나도 없습니다")
+        problems.append("The team has no bots")
     names = [b.name for b in bots]
     for i, bot in enumerate(bots):
         err = bot_name_error(project, bot.name, names[:i] + names[i + 1:])
         if err:
-            problems.append(f"{bot.name or '(이름 없음)'}: {err}")
+            problems.append(f"{bot.name or '(no name)'}: {err}")
         trigger_names = [t.name for t in bot.triggers]
         for j, t in enumerate(bot.triggers):
             if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", t.name) or t.name in trigger_names[:j]:
-                problems.append(f"{bot.name}: 트리거 이름이 올바르지 않거나 겹칩니다: {t.name!r}")
+                problems.append(f"{bot.name}: trigger name invalid or duplicated: {t.name!r}")
             if parse_every(t.every) is None:
-                problems.append(f"{bot.name}/{t.name}: 간격은 30s, 10m, 2h, 1d 형식입니다: {t.every!r}")
+                problems.append(f"{bot.name}/{t.name}: interval must look like 30s, 10m, 2h or 1d: {t.every!r}")
             if not t.run.strip() or not t.prompt.strip():
-                problems.append(f"{bot.name}/{t.name}: 실행할 명령과 봇에게 줄 지시가 모두 필요합니다")
+                problems.append(f"{bot.name}/{t.name}: needs both a command and a prompt for the bot")
     return problems
 
 
@@ -358,13 +358,15 @@ def bot_cwd(hub: Path, bot: Bot) -> Path:
     return resolve_repo(hub, bot.dirs[0]) if bot.dirs else bot_home(hub, bot.name)
 
 
-def roster_lines(team: Team, exclude: str = "") -> list[str]:
+def roster_lines(team: Team, exclude: str = "", english: bool = False) -> list[str]:
+    """One line per bot. Korean for agent prompts (PREAMBLE); english=True for the user's `roster`."""
+    no_repo, no_role = ("no repo", "(no purpose)") if english else ("리포 없음", "(설명 없음)")
     lines = []
     for b in team.bots:
         if b.name == exclude:
             continue
-        where = ", ".join(b.dirs) if b.dirs else "리포 없음"
-        lines.append(f"- {b.name}: {b.role or '(설명 없음)'} ({where})")
+        where = ", ".join(b.dirs) if b.dirs else no_repo
+        lines.append(f"- {b.name}: {b.role or no_role} ({where})")
     return lines
 
 
@@ -417,14 +419,15 @@ def _cw(ch: str) -> int:
 
 
 def display_width(s: str) -> int:
-    return sum(_cw(c) for c in s)
+    # NFC first: macOS file names come decomposed (NFD), and a Korean syllable would count as 2-3 cells.
+    return sum(_cw(c) for c in unicodedata.normalize("NFC", s))
 
 
 def clip(s: str, width: int) -> str:
     """Cut or pad s so it occupies exactly `width` terminal cells."""
     if width <= 0:
         return ""
-    s = s.replace("\n", " ").replace("\t", " ")
+    s = unicodedata.normalize("NFC", s.replace("\n", " ").replace("\t", " "))
     if display_width(s) <= width:
         return s + " " * (width - display_width(s))
     out, used = "", 0

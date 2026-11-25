@@ -20,7 +20,7 @@ def need_hub(args) -> Path:
     if hub is not None and core.spec_error(hub):
         sys.exit(core.spec_error(hub))
     if hub is None or core.load_team(hub) is None:
-        sys.exit("herdr-team.toml 을 찾지 못했습니다. 허브 폴더에서 team-setup 액션(권장 키 prefix+shift+e)으로 팀을 먼저 만드세요.")
+        sys.exit("No herdr-team.toml found. Create a team first with the team-setup action (suggested key prefix+shift+e) in the hub folder.")
     return hub
 
 
@@ -30,7 +30,7 @@ def run_herdr(fn) -> int:
     try:
         return fn()
     except herdr.HerdrError as e:
-        print(f"herdr 오류: {e.message}", file=sys.stderr)
+        print(f"herdr error: {e.message}", file=sys.stderr)
         return 1
 
 
@@ -51,13 +51,13 @@ def action(name: str) -> int:
             return 0
         if name == "up":
             if hub is None:
-                print("herdr-team.toml 을 찾지 못했습니다. team-setup 액션(권장 키 prefix+shift+e)으로 팀을 먼저 만드세요.", file=sys.stderr)
+                print("No herdr-team.toml found. Create a team first with the team-setup action (suggested key prefix+shift+e).", file=sys.stderr)
                 return 1
             from . import team
             return team.up(hub)
         if name == "setup":
             if not cwd:
-                print("현재 창의 작업 폴더를 알 수 없습니다.", file=sys.stderr)
+                print("Can't tell the current pane's working folder.", file=sys.stderr)
                 return 1
             herdr.run("plugin", "pane", "open", "--plugin", "herdr-team", "--entrypoint", "setup",
                       "--env", f"HERDR_TEAM_HUB={hub or cwd}")
@@ -71,23 +71,23 @@ def action(name: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="herdr-team")
     sub = p.add_subparsers(dest="cmd", required=True, metavar="<command>")
-    sub.add_parser("edit", help="팀 편집 화면: 봇 추가·수정·삭제, 트리거 (처음 만들 때도 이것)")
-    sub.add_parser("up", help="팀 띄우기 (이미 떠 있는 것은 건너뛴다)")
-    sub.add_parser("board", help="현황판")
-    rs = sub.add_parser("restart", help="봇을 다시 띄워 바뀐 설정을 반영 (봇을 안 적으면 전부, 일하는 봇은 건너뜀)")
+    sub.add_parser("edit", help="Team editor: create the team, add, change and remove bots and triggers")
+    sub.add_parser("up", help="Start the team (skips what is already running)")
+    sub.add_parser("board", help="Status board")
+    rs = sub.add_parser("restart", help="Restart bots to apply changed settings (all if none given; busy bots are skipped)")
     rs.add_argument("bots", nargs="*")
-    k = sub.add_parser("ask", help="봇에게 일 주기")
+    k = sub.add_parser("ask", help="Give a bot a task")
     k.add_argument("bot")
     k.add_argument("text", nargs="+")
-    w = sub.add_parser("wait", help="열린 작업이 정리될 때까지 기다리기, 최대 30분 (종료 코드 0 전부 종료 / 2 막힌 봇 있음 / 3 시간 초과)")
+    w = sub.add_parser("wait", help="Wait up to 30 min for open tasks (exit 0 all done / 2 a bot is blocked / 3 timed out)")
     w.add_argument("bots", nargs="*")
-    sub.add_parser("roster", help="팀 명단과 각 봇의 상태")
-    pk = sub.add_parser("peek", help="봇이 지금 무엇을 하는지 요약해서 보기")
+    sub.add_parser("roster", help="Team members and each one's state")
+    pk = sub.add_parser("peek", help="Summary of what a bot is doing now")
     pk.add_argument("bot")
-    n = sub.add_parser("nudge", help="진행 중인 봇에게 방향 수정 보내기 (작업을 새로 만들지 않는다)")
+    n = sub.add_parser("nudge", help="Send a course correction to a working bot (no new task)")
     n.add_argument("bot")
     n.add_argument("text", nargs="+")
-    q = sub.add_parser("question", help="다른 봇(또는 master)에게 묻고 답을 100초까지 기다리기 (종료 코드 3 = 아직 답 없음)")
+    q = sub.add_parser("question", help="Ask another bot (or master) and wait up to 100 s for the answer (exit 3 = no answer yet)")
     q.add_argument("bot")
     q.add_argument("text", nargs="+")
     # Hidden: run by `up` (watch), by the plugin manifest (action), and by developers (selftest).
@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         hub = hub_from(args) or Path.cwd().resolve()
         if core.spec_error(hub):
             # Starting from blank defaults here would overwrite roles and agent_args.
-            sys.exit(core.spec_error(hub) + "\n파일을 고치거나 지운 뒤 다시 실행하세요.")
+            sys.exit(core.spec_error(hub) + "\nFix or delete the file, then run this again.")
         return wizard.run_wizard(hub)
     if args.cmd == "up":
         from . import team

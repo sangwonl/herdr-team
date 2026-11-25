@@ -17,18 +17,18 @@ def run(*args: str, timeout: float = 120.0) -> dict:
     try:
         proc = subprocess.run([binary, *args], capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
-        raise HerdrError("herdr_not_found", f"herdr 실행 파일을 찾지 못했습니다: {binary}")
+        raise HerdrError("herdr_not_found", f"herdr executable not found: {binary}")
     except subprocess.TimeoutExpired:
-        raise HerdrError("timeout", f"herdr {' '.join(args[:2])} 응답 없음 ({timeout:.0f}초)")
+        raise HerdrError("timeout", f"herdr {' '.join(args[:2])} did not respond ({timeout:.0f}s)")
     except OSError as e:
-        raise HerdrError("os_error", f"herdr 실행 실패: {e}")
+        raise HerdrError("os_error", f"could not run herdr: {e}")
     if proc.returncode != 0:
         raw = (proc.stderr or proc.stdout).strip()
         try:
             err = json.loads(raw.splitlines()[-1])["error"]
             raise HerdrError(str(err.get("code", "error")), str(err.get("message", raw)))
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-            raise HerdrError("error", raw or f"herdr {' '.join(args[:2])} 실패 (종료 코드 {proc.returncode})")
+            raise HerdrError("error", raw or f"herdr {' '.join(args[:2])} failed (exit code {proc.returncode})")
     try:
         return json.loads(proc.stdout).get("result", {})
     except (ValueError, AttributeError):

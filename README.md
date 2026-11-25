@@ -2,7 +2,7 @@
 
 A [herdr](https://herdr.dev) plugin that runs a team of [Claude Code](https://claude.com/claude-code) agents across your repos. You talk to one **master** agent; it hands work to **bots**, each in its own tab, and collects their reports. A status board shows what everyone is doing. A bot can own one repo, look at several, or work with no repo at all.
 
-**Requirements:** herdr 0.9.5+ (macOS or Linux), Python 3.11+ as `python3`, Claude Code. The CLI, editor and agent prompts are currently in Korean.
+**Requirements:** herdr 0.9.5+ (macOS or Linux), Python 3.11+ as `python3`, Claude Code. The editor, board and CLI are in English; agent prompts and bot templates are still in Korean.
 
 ## Install
 
@@ -42,7 +42,7 @@ The master and bots get `herdr-team` on their `PATH` automatically. Tabs that `u
 4. Tell the master what you want, e.g. "ask api to add a /health endpoint".
 
 The editor shows its own key hints. After saving, it offers to restart the bots that changed. To check a bot, press `Enter` on its card in the board (`prefix+t`) or use herdr's `prefix+g`.
-Board keys: `↑` `↓` (or `j` `k`) move · `Enter` jump to that agent's pane · `l` log size · `q` quit.
+Board keys: `↑` `↓` (or `j` `k`) move · `Enter` jump to that agent's pane · `l` log size · `q` close.
 
 ## Working with the master
 

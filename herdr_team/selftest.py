@@ -59,6 +59,13 @@ def test_width():
     assert clip("ab", 5) == "ab   "
     assert clip("abc", 0) == ""
     assert all(display_width(clip(s, w)) == w for s in ["한글 mixed 텍스트", "x"] for w in range(1, 12))
+    import unicodedata
+    nfd = unicodedata.normalize("NFD", "타일 서버")             # macOS 파일 이름은 분해형(NFD)으로 온다
+    assert display_width(nfd) == display_width("타일 서버") == 9 and clip(nfd, 9) == "타일 서버"
+    from .core import roster_lines
+    team = Team("p", [Bot("a", [], ""), Bot("b", ["./b"], "웹")], [], Path("/h"))
+    assert roster_lines(team) == ["- a: (설명 없음) (리포 없음)", "- b: 웹 (./b)"]          # PREAMBLE 용
+    assert roster_lines(team, english=True)[0] == "- a: (no purpose) (no repo)"          # 사용자 roster 용
 
 
 def test_state_files_tolerant():
@@ -221,7 +228,7 @@ def test_board_team():
     assert m.master and (m.title, m.status, m.text, m.target) == ("master", "working", "", "w:p1")
     assert (tb.title, tb.sub, tb.status, tb.elapsed, tb.text) == ("tb", "TileServer +1", "working", "4m", "t1 · 스키마 v2 적용")
     assert (web.status, web.text) == ("reported", "t2 · 검토")
-    assert (gone.status, gone.target, gone.text) == ("unknown", "", "실행 중이 아님")
+    assert (gone.status, gone.target, gone.text) == ("unknown", "", "not running")
     idle = cards_team(team, agents, {}, 0.0, lambda p: False)[2]
     assert (idle.status, idle.elapsed, idle.text) == ("idle", "", "")       # 작업도 기록도 없으면 빈칸(터미널 제목 안 씀)
     # 작업이 끝나 tasks 에서 빠진 뒤: 터미널 제목 대신 log 의 마지막 ask, herdr 'done' 은 idle
@@ -232,7 +239,7 @@ def test_board_team():
     m2, _, web2, _ = cards_team(team, stale, {}, 0.0, lambda p: False, events=log)
     assert (web2.text, web2.status) == ("t5 · 새 일", "idle")
     assert team_mod.short_title("  a\n  b ") == "a b" and len(team_mod.short_title("x" * 300)) == 60
-    assert "옛 제목" not in m2.text and m2.text == "web ✓ master t5 보고서 제출" and m2.status == "idle"
+    assert "옛 제목" not in m2.text and m2.text == "web ✓ master t5 report in" and m2.status == "idle"
 
     ev = [{"ts": "14:02", "kind": "ask", "bot": "tb", "task": "t1", "text": "스키마 v2 적용 요청"},
           {"ts": "14:09", "kind": "reported", "bot": "web", "task": "t2", "text": ""},
@@ -241,7 +248,7 @@ def test_board_team():
     lines = log_lines(ev, 60)
     assert len(lines) == 3
     assert lines[0].startswith("14:02 master → tb") and "스키마 v2 적용 요청" in lines[0]
-    assert lines[1].startswith("14:09 web → master") and "보고서" in lines[1]
+    assert lines[1].startswith("14:09 web → master") and "report in" in lines[1]
     assert lines[2].startswith("14:10 tb") and "⚠" in lines[2]
     assert all(display_width(l) <= 20 for l in log_lines(ev, 20))
 
@@ -363,7 +370,7 @@ def test_v2_commands_pure():
           {"ts": "5", "kind": "trigger_done", "bot": "api", "task": "t3", "text": "review-requests"}]
     lines = log_lines(ev, 80)
     assert lines[0].startswith("1 api ? web") and "포트가 뭐야" in lines[0]
-    assert lines[1].startswith("2 web → api") and "답" in lines[1]
+    assert lines[1].startswith("2 web → api") and "answer" in lines[1]
     assert lines[2].startswith("3 master ⇢ api") and "18080" in lines[2]
     assert lines[3].startswith("4 ⚡ review-requests → api") and lines[4].startswith("5 api") and "review-requests" in lines[4]
 
@@ -380,7 +387,7 @@ def test_v2_ask_rules():
         try:
             with contextlib.redirect_stdout(out):
                 assert team_mod.ask(hub, "a", "일 맡기기") == 2          # 봇은 일을 맡길 수 없다
-                assert "마스터" in out.getvalue()
+                assert "Only the master" in out.getvalue()
                 # 트리거로 생긴 작업은 마스터의 wait 가 기다리지 않는다
                 save_tasks(hub, {"a": {"id": "t1", "title": "x", "sent_at": 0.0, "seq": 1, "report": "", "origin": "trigger"}})
                 assert team_mod.wait(hub, [], timeout=2, poll=0.01) == 0
@@ -459,7 +466,7 @@ def test_v2_review_fixes():
                 save_tasks(hub, {"a": {"id": "t1", "title": "pr", "sent_at": 0.0, "seq": 5, "report": "", "origin": "trigger"},
                                  "b": {"id": "t2", "title": "pr", "sent_at": 0.0, "seq": 1, "report": "", "origin": "trigger"}})
                 sent, why = team_mod.send_task(hub, team, team.bots[0], "x")
-                assert not sent and "트리거" in why and "wait" not in why
+                assert not sent and "trigger" in why and "wait" not in why
                 # I2: 트리거 작업 중 막힌 봇은 마스터에게 한 번만 알린다
                 state = team_mod.WatchState()
                 team_mod.watch_tick(hub, state, now=0.0)
@@ -747,18 +754,18 @@ def test_setup_upgrade():
         # 미리보기와 저장 전 요약, 다시 띄울 봇
         rows = bot_preview(hub, Draft(team.bots[0], None, "a"))
         text = "\n".join("".join(t for t, _ in r) for r in rows)
-        assert "SOUL.md" in text and "## Extra" in text and "봇의 홈" in text
+        assert "SOUL.md" in text and "## Extra" in text and "bot's home" in text
         fresh = Draft(Bot("b", ["./b"], ""), None, None)
         assert "developer" in "".join(t for r in bot_preview(hub, fresh) for t, _ in r)   # 폴더가 있으면 developer
         same = Draft(copy_bot(team.bots[0]), None, "a")
-        assert change_summary(team, "p", [same], set(), False) == [[("바뀐 것이 없습니다", "dim")]]
+        assert change_summary(team, "p", [same], set(), False) == [[("Nothing changed", "dim")]]
         assert changed_bots(team, [same], set(), False) == []
         assert changed_bots(team, [same], {"a"}, False) == ["a"]          # SOUL.md 를 편집기로 고쳤다
         assert changed_bots(team, [same], set(), True) == ["a"]           # 공통 지침이 바뀌면 모두
         moved = Draft(Bot("a2", ["./x"], "목적"), None, "a", reapply="writer")
         summary = ["".join(t for t, _ in r) for r in change_summary(team, "q", [moved, fresh], set(), False)]
-        assert summary[0].startswith("~ 프로젝트 이름 p → q")
-        assert "이름 a → a2 (홈 폴더 이동)" in summary[1] and "폴더 리포 없음 → ./x" in summary[1] and "writer" in summary[1]
+        assert summary[0].startswith("~ project name p → q")
+        assert "name a → a2 (home folder moves)" in summary[1] and "folders no repo → ./x" in summary[1] and "writer" in summary[1]
         assert summary[2].startswith("+ b") and len(summary) == 3
         assert changed_bots(team, [moved, fresh], set(), False) == ["a2", "b"]
         gone = ["".join(t for t, _ in r) for r in change_summary(team, "p", [fresh], set(), False)]

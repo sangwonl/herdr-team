@@ -16,7 +16,7 @@ from .core import (Team, agent_name, classify, clip, display_width, load_tasks, 
 # vary by font and push borders out of line.
 GLYPH = {"working": "*", "blocked": "!", "reported": "✓", "done": "✓",
          "no_report": "x", "idle": "·", "unknown": "?"}
-LABEL = {"reported": "보고서 도착", "no_report": "보고서 없음", "unknown": "실행 중이 아님"}
+LABEL = {"reported": "reported", "no_report": "no report", "unknown": "not running"}
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 CARD_W = 26
 CARD_H = 6
@@ -175,7 +175,7 @@ def cards_team(team: Team, agents: list[dict], tasks: dict[str, dict], now: floa
     def card(title: str, sub: str, name: str, task: dict | None, text: str, master: bool = False) -> Card:
         agent = by_name.get(name)
         if agent is None:
-            return Card(title, sub, "unknown", "", "실행 중이 아님", "", master)
+            return Card(title, sub, "unknown", "", "not running", "", master)
         if task:
             status = classify(task, agent, report_exists(task.get("report", "")))
             return Card(title, sub, status, fmt_elapsed(now - task.get("sent_at", now)),
@@ -191,7 +191,7 @@ def cards_team(team: Team, agents: list[dict], tasks: dict[str, dict], now: floa
                                                            str(known[0].get("task", "")), r["text"]) if p)
     cards = [card("master", team.name, agent_name(team.name, "master"), None, latest, master=True)]
     for bot in team.bots:
-        sub = os.path.basename(bot.dirs[0].rstrip("/")) if bot.dirs else "리포 없음"
+        sub = os.path.basename(bot.dirs[0].rstrip("/")) if bot.dirs else "no repo"
         if len(bot.dirs) > 1:
             sub += f" +{len(bot.dirs) - 1}"
         cards.append(card(bot.name, sub, agent_name(team.name, bot.name), tasks.get(bot.name), last.get(bot.name, "")))
@@ -201,16 +201,16 @@ def cards_team(team: Team, agents: list[dict], tasks: dict[str, dict], now: floa
 LOG_KINDS = {
     # kind: (icon, who it is from, who it is to, trailing note)
     "ask": ("→", "master", "{bot}", ""),
-    "reported": ("✓", "{bot}", "master", "보고서 제출"),
-    "no_report": ("x", "{bot}", "master", "보고서 없이 종료"),
-    "blocked": ("!", "{bot}", "", "사용자 확인 필요"),
-    "timeout": ("x", "{bot}", "", "시간 초과"),
-    "up": ("+", "", "", "팀 시작"),
+    "reported": ("✓", "{bot}", "master", "report in"),
+    "no_report": ("x", "{bot}", "master", "ended without a report"),
+    "blocked": ("!", "{bot}", "", "needs you"),
+    "timeout": ("x", "{bot}", "", "timed out"),
+    "up": ("+", "", "", "team up"),
     "question": ("?", "{sender}", "{bot}", ""),
-    "answer": ("←", "{bot}", "{sender}", "답변"),
+    "answer": ("←", "{bot}", "{sender}", "answer"),
     "nudge": ("»", "master", "{bot}", ""),
     "trigger": ("~", "{text}", "{bot}", ""),
-    "trigger_done": ("~", "{bot}", "", "{text} 처리 완료"),
+    "trigger_done": ("~", "{bot}", "", "{text} done"),
 }
 
 
@@ -224,9 +224,9 @@ def log_rows(events: list) -> list[dict]:
         fill = {"bot": str(e.get("bot", "")), "sender": str(e.get("from", "master")), "text": str(e.get("text", ""))}
         text = note.format(**fill) if note else fill["text"]
         if e["kind"] == "up":
-            text = f"팀 시작 {fill['text']}".strip()
+            text = f"team up {fill['text']}".strip()
         elif e["kind"] == "trigger":
-            text = "트리거"
+            text = "trigger"
         rows.append({"ts": str(e.get("ts", "")), "icon": icon, "src": src.format(**fill), "dst": dst.format(**fill),
                      "text": text, "kind": e["kind"]})
     return rows
@@ -236,16 +236,16 @@ def log_lines(events: list[dict], width: int) -> list[str]:
     """Plain-text log, one line per event (the colored board renders log_rows instead)."""
     formats = {
         "ask": "{ts} master → {bot}  {text}",
-        "reported": "{ts} {bot} → master  보고서 제출",
-        "no_report": "{ts} {bot} → master  보고서 없이 종료",
-        "blocked": "{ts} {bot}  ⚠ 사용자 확인 필요",
-        "timeout": "{ts} {bot}  시간 초과",
-        "up": "{ts} 팀 시작 {text}",
+        "reported": "{ts} {bot} → master  report in",
+        "no_report": "{ts} {bot} → master  ended without a report",
+        "blocked": "{ts} {bot}  ⚠ needs you",
+        "timeout": "{ts} {bot}  timed out",
+        "up": "{ts} team up {text}",
         "question": "{ts} {sender} ? {bot}  {text}",
-        "answer": "{ts} {bot} → {sender}  답변",
+        "answer": "{ts} {bot} → {sender}  answer",
         "nudge": "{ts} master ⇢ {bot}  {text}",
         "trigger": "{ts} ⚡ {text} → {bot}",
-        "trigger_done": "{ts} {bot}  ⚡ {text} 처리 완료",
+        "trigger_done": "{ts} {bot}  ⚡ {text} done",
     }
     lines = []
     for e in events:
@@ -480,14 +480,14 @@ def draw(win, title: str, master: Card | None, cards: list[Card], rows: list[dic
             draw_card(win, y + (r - first_row) * CARD_H, c * (cw + 1), cw, card, view.sel == i + offset, t, view,
                       tap_top=tap)
     if not everything:
-        safe_addstr(win, 2, 1, "에이전트가 없습니다", color("dim"))
+        safe_addstr(win, 2, 1, "No agents", color("dim"))
     if log_h:
         draw_log(win, h - log_h - foot, w, log_h, rows, t, view)
     if t - view.log_new_at >= 3:
         view.log_seen = len(rows)
     if error:
         safe_addstr(win, h - 2, 0, clip(" " + error, w), color("blocked", curses.A_BOLD))
-    safe_addstr(win, h - 1, 0, clip(" ←↑↓→ 선택 · ⏎ 창으로 이동 · l 로그 크기 · q 닫기", w), color("dim"))
+    safe_addstr(win, h - 1, 0, clip(" ←↑↓→ select · ⏎ go to pane · l log size · q close", w), color("dim"))
     win.refresh()
     return cols
 
