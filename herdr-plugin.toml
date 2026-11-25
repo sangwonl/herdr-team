@@ -1,0 +1,35 @@
+id = "herdr-team"
+name = "herdr-team"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Master/sub agent teams across repos, with a status board."
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "team-board"
+title = "Team: open board"
+command = ["python3", "-m", "herdr_team", "action", "board"]
+
+[[actions]]
+id = "team-setup"
+title = "Team: setup"
+command = ["python3", "-m", "herdr_team", "action", "setup"]
+
+[[actions]]
+id = "team-up"
+title = "Team: up"
+command = ["python3", "-m", "herdr_team", "action", "up"]
+
+[[panes]]
+id = "setup"
+title = "Team setup"
+placement = "popup"
+width = "70%"
+height = "80%"
+command = ["python3", "-m", "herdr_team", "init"]
+
+[[panes]]
+id = "board"
+title = "Team"
+placement = "split"
+command = ["python3", "-m", "herdr_team", "board"]

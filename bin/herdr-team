@@ -1,0 +1,3 @@
+#!/bin/sh
+self=$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")
+PYTHONPATH="$(dirname "$(dirname "$self")")${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m herdr_team "$@"

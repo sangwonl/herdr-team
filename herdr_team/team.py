@@ -1,0 +1,560 @@
+"""Team operations against a live herdr server: up, ask, wait."""
+import os
+import subprocess
+import time
+from pathlib import Path
+
+from . import board, herdr
+from .core import (parse_every, trigger_fire,
+                   load_questions, next_question_id, question_blocked, roster_lines, save_questions,
+                   transcript_digest, transcript_path,
+                   Bot, Team, agent_name, bot_cwd, bot_home, ensure_home, render_preamble, append_log, build_prompt, classify, load_tasks, load_team,
+                   locked, next_task_id, read_log, resolve_repo, save_tasks, state_dir, update_tasks,
+                   wait_done)
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+NAME_KEY = "name"  # field of an agent record that carries its herdr agent name
+
+
+def _edit(path: Path | str) -> str:
+    # `Edit(//abs/path)` is Claude Code's absolute-path rule; it covers the Write tool too.
+    return f"Edit(/{path})"
+
+
+def master_args(team: Team) -> list[str]:
+    return ["--append-system-prompt-file", str(PLUGIN_ROOT / "master-prompt.md"),
+            "--allowedTools", "Bash(herdr-team *)", _edit(team.hub / ".herdr-team" / "context.md")]
+
+
+def bot_args(team: Team, bot: Bot) -> list[str]:
+    sd = team.hub / ".herdr-team"
+    extra = [str(resolve_repo(team.hub, d)) for d in bot.dirs[1:]]
+    return ["--append-system-prompt-file", str(bot_home(team.hub, bot.name) / "PREAMBLE.md"),
+            "--add-dir", str(sd), *extra,
+            # Only the read-and-ask commands: `watch` and `up` run commands taken from a spec file,
+            # so a blanket `herdr-team *` would let a bot run anything without a prompt.
+            "--allowedTools", "Bash(herdr-team question *)", "Bash(herdr-team roster)", "Bash(herdr-team peek *)",
+            _edit(f"{bot_home(team.hub, bot.name)}/**"),
+            _edit(f"{sd}/reports/**"), _edit(f"{sd}/answers/**"),
+            *team.agent_args]
+
+
+def live_agents() -> dict[str, dict]:
+    return {a[NAME_KEY]: a for a in herdr.agents() if a.get(NAME_KEY)}
+
+
+def _start(name: str, pane: str, args: list[str]) -> str:
+    """Start claude in pane. Returns the outcome text for the report line."""
+    deadline = time.monotonic() + 15
+    while True:
+        try:
+            herdr.run("agent", "start", name, "--kind", "claude", "--pane", pane,
+                      "--timeout", "60000", "--", *args, timeout=90)
+            return "started"
+        except herdr.HerdrError as e:
+            if e.code == "agent_not_ready":
+                return "started (입력 대기 중 — 그 창에서 확인이 필요합니다)"
+            # A pane created a moment ago has no shell prompt yet; give it a few seconds.
+            if "not an available shell" in e.message and time.monotonic() < deadline:
+                time.sleep(0.5)
+                continue
+            raise
+
+
+def up(hub: Path, focus: bool = True) -> int:
+    if master_only(hub, "up"):
+        return 2
+    team = load_team(hub)
+    if team is None:
+        print("herdr-team.toml 을 읽지 못했습니다.")
+        return 1
+    if not team.bots:
+        print("팀에 봇이 없습니다. herdr-team edit 으로 봇을 추가하세요.")
+        return 1
+    state_dir(hub)
+    live = live_agents()
+    focus_flag = "--focus" if focus else "--no-focus"
+
+    ws = next((w for w in herdr.workspaces() if w.get("label") == team.name), None)
+    created = ws is None
+    # Agents call `herdr-team`; put this checkout's bin/ on their PATH so no install step is needed.
+    path = f"{PLUGIN_ROOT / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}"
+    if created:
+        made = herdr.run("workspace", "create", "--cwd", str(hub), "--label", team.name,
+                         "--env", f"PATH={path}", focus_flag)
+        ws_id, master_pane = made["workspace"]["workspace_id"], made["root_pane"]["pane_id"]
+    else:
+        ws_id = ws["workspace_id"]
+        first_tab = herdr.tabs(ws_id)[0]["tab_id"]
+        master_pane = next(p["pane_id"] for p in herdr.panes(ws_id) if p.get("tab_id") == first_tab)
+
+    failed = 0
+    master = agent_name(team.name, "master")
+    if master in live:
+        print("master\talready running")
+    else:
+        try:
+            print(f"master\t{_start(master, master_pane, master_args(team))}")
+        except herdr.HerdrError as e:
+            failed += 1
+            print(f"master\tfailed: {e.message}")
+    if created:
+        try:
+            board.open_pane(master_pane, hub)
+        except herdr.HerdrError as e:
+            print(f"board\tfailed: {e.message}")
+
+    tabs = {t.get("label"): t["tab_id"] for t in herdr.tabs(ws_id)}
+    started = 0
+    # ponytail: bots start one after another (a few seconds each); thread this if teams get large.
+    for bot in team.bots:
+        name = agent_name(team.name, bot.name)
+        if name in live:
+            print(f"{bot.name}\talready running")
+            continue
+        missing = [str(resolve_repo(hub, d)) for d in bot.dirs if not resolve_repo(hub, d).is_dir()]
+        if missing:
+            failed += 1
+            print(f"{bot.name}\tfailed: 폴더가 없습니다: {', '.join(missing)}")
+            continue
+        home = ensure_home(hub, bot)
+        (home / "PREAMBLE.md").write_text(render_preamble(team, bot), encoding="utf-8")
+        try:
+            if bot.name in tabs:
+                pane = next(p["pane_id"] for p in herdr.panes(ws_id) if p.get("tab_id") == tabs[bot.name])
+            else:
+                pane = herdr.run("tab", "create", "--workspace", ws_id, "--cwd", str(bot_cwd(hub, bot)),
+                                 "--label", bot.name, "--env", f"PATH={path}",
+                                 "--no-focus")["root_pane"]["pane_id"]
+            print(f"{bot.name}\t{_start(name, pane, bot_args(team, bot))}")
+            started += 1
+        except (herdr.HerdrError, StopIteration) as e:
+            failed += 1
+            print(f"{bot.name}\tfailed: {getattr(e, 'message', '탭의 창을 찾지 못했습니다')}")
+    if started:
+        append_log(hub, "up", text=f"봇 {started}/{len(team.bots)}")
+    if any(b.triggers for b in team.bots) and "watch" not in tabs:
+        try:
+            pane = herdr.run("tab", "create", "--workspace", ws_id, "--cwd", str(hub), "--label", "watch",
+                             "--env", f"PATH={path}", "--no-focus")["root_pane"]["pane_id"]
+            time.sleep(1.5)  # let the new shell reach its prompt
+            herdr.run("pane", "run", pane, "herdr-team watch")
+            print("watch\tstarted")
+        except herdr.HerdrError as e:
+            print(f"watch\tfailed: {e.message}")
+    return 1 if failed else 0
+
+
+# ---- ask / wait --------------------------------------------------------------
+
+def caller(hub: Path) -> str:
+    """Who is running this command: the team bot whose agent occupies the calling pane, else "master".
+    A user's own shell, the master agent and the watch tab all count as the master. Environment
+    variables are not used: a shell the user opens in a bot's tab inherits that tab's environment."""
+    pane = os.environ.get("HERDR_PANE_ID")
+    team = load_team(hub)
+    if not pane or team is None:
+        return "master"
+    try:
+        agents = herdr.agents()
+    except herdr.HerdrError:
+        return "master"   # the pre-allowed tool list is what actually keeps bots off master commands
+    # ponytail: a pane moved to another workspace gets a new id while its processes keep the old one.
+    name = next((a.get("name", "") for a in agents if a.get("pane_id") == pane), "")
+    bots = {agent_name(team.name, b.name): b.name for b in team.bots}
+    return bots.get(name, "master")
+
+
+def master_only(hub: Path, command: str) -> int:
+    """0 when the caller may run a master-only command; otherwise prints why and returns 2."""
+    if caller(hub) == "master":
+        return 0
+    print(f"`herdr-team {command}` 는 마스터만 실행합니다.")
+    return 2
+
+
+def send_task(hub: Path, team: Team, bot: Bot, text: str, origin: str = "master", note: str = "") -> tuple[bool, str]:
+    """Give bot a task. Returns (sent, task id or the reason it was not sent)."""
+    with locked(hub):  # check, id allocation, send and record must not interleave with another ask/wait
+        tasks = load_tasks(hub)
+        if bot.name in tasks:
+            open_task = tasks[bot.name]
+            if open_task.get("origin") == "trigger":
+                return False, (f"트리거 '{open_task.get('title', '')}' 로 시작된 작업 {open_task['id']} 을 처리 중입니다. "
+                               "끝나면 알림이 옵니다. 급하면 herdr-team peek 으로 확인하세요.")
+            return False, f"열린 작업 {open_task['id']} 이 있습니다. herdr-team wait 로 먼저 정리하세요."
+        name = agent_name(team.name, bot.name)
+        agent = live_agents().get(name)
+        if agent is None:
+            return False, "실행 중이 아닙니다. herdr-team up 으로 띄우세요."
+        if agent.get("agent_status") in ("working", "blocked"):
+            return False, f"지금 {agent['agent_status']} 상태라 보낼 수 없습니다."
+        task_id = next_task_id(hub)
+        report = state_dir(hub) / "reports" / f"{task_id}-{bot.name}.md"
+        try:
+            herdr.run("agent", "prompt", name, build_prompt(hub, task_id, text, report))
+        except herdr.HerdrError as e:
+            return False, f"보내지 못했습니다: {e.message}"
+        title = text.strip().splitlines()[0] if text.strip() else ""
+        tasks[bot.name] = {"id": task_id, "title": note or title, "sent_at": time.time(),
+                           "seq": agent.get("state_change_seq"), "report": str(report), "origin": origin}
+        save_tasks(hub, tasks)
+        append_log(hub, "trigger" if origin == "trigger" else "ask", bot.name, task_id, note or title)
+    return True, task_id
+
+
+def ask(hub: Path, bot_name: str, text: str) -> int:
+    team = load_team(hub)
+    bot = next((b for b in team.bots if b.name == bot_name), None) if team else None
+    if caller(hub) != "master":
+        print('일 맡기기는 마스터만 합니다. 다른 봇의 영역에서 작업이 필요하면 보고서의 "다른 봇에 필요한 작업"에 적으세요. '
+              '알고 싶은 것은 `herdr-team question <봇> "<질문>"` 으로 묻습니다.')
+        return 2
+    if bot is None:
+        names = ", ".join(b.name for b in team.bots) if team else ""
+        print(f"{bot_name}: 팀에 없는 봇입니다. 봇 목록: {names}")
+        return 2
+    sent, info = send_task(hub, team, bot, text)
+    print(f"{bot_name} {info} sent" if sent else f"{bot_name}: {info}")
+    return 0 if sent else 2
+
+
+def task_states(team: Team, tasks: dict[str, dict], agents: dict[str, dict]) -> dict[str, str]:
+    return {bot: classify(t, agents.get(agent_name(team.name, bot)), os.path.exists(t.get("report", "")))
+            for bot, t in tasks.items()}
+
+
+def wait(hub: Path, bots: list[str], timeout: float = 1800.0, poll: float = 2.0) -> int:
+    team = load_team(hub)
+    if team is None:
+        print("herdr-team.toml 을 읽지 못했습니다.")
+        return 1
+    # Tasks started by a trigger are collected by `watch`, not by the master.
+    watched = {b: t for b, t in load_tasks(hub).items()
+               if (not bots or b in bots) and t.get("origin") != "trigger"}
+    if not watched:
+        print("열린 작업이 없습니다")
+        return 0
+    deadline = time.monotonic() + timeout
+    announced: set[str] | None = None
+    errors, timed_out = 0, False
+    while True:
+        try:
+            states = task_states(team, watched, live_agents())
+            errors = 0
+        except herdr.HerdrError as e:
+            errors += 1
+            if errors >= 5:
+                print(f"herdr 오류: {e.message}")
+                return 3
+            time.sleep(poll)
+            continue
+        blocked = {b for b, s in states.items() if s == "blocked"}
+        if announced is None:
+            announced = set(blocked)  # already blocked when we started: report once, keep waiting for the rest
+            if blocked and any(s == "working" for s in states.values()):
+                print("이미 막혀 있는 봇: " + ", ".join(sorted(blocked)) + " (나머지를 기다립니다)", flush=True)
+            if not any(s == "working" for s in states.values()):
+                break
+        else:
+            announced &= blocked  # a bot that left blocked counts as new if it blocks again
+            if wait_done(states, announced):
+                break
+        if time.monotonic() >= deadline:
+            timed_out = True
+            break
+        time.sleep(poll)
+
+    log = read_log(hub, 200)
+    closed = []
+    for bot, state in states.items():
+        task = watched[bot]
+        report = task.get("report", "")
+        print(f"{bot}\t{state}\t{report if os.path.exists(report) else '-'}")
+        if state in ("reported", "no_report"):
+            closed.append((bot, task["id"]))
+            append_log(hub, state, bot, task["id"])
+        elif state == "blocked":
+            last = next((e for e in reversed(log) if e.get("task") == task["id"]), {})
+            if last.get("kind") != "blocked":
+                append_log(hub, "blocked", bot, task["id"])
+        elif timed_out:
+            append_log(hub, "timeout", bot, task["id"])
+
+    def close(tasks: dict[str, dict]) -> None:
+        for bot, task_id in closed:
+            if tasks.get(bot, {}).get("id") == task_id:  # leave a newer task for the same bot alone
+                del tasks[bot]
+    update_tasks(hub, close)
+    if timed_out:
+        return 3
+    return 2 if any(s == "blocked" for s in states.values()) else 0
+
+
+# ---- attach --------------------------------------------------------------------
+
+def attach_command(team: Team, who: str, inside: bool) -> list[str] | None:
+    """herdr arguments that take the user to an agent: focus it inside herdr, attach to it from outside."""
+    who = who or "master"
+    if who != "master" and who not in [b.name for b in team.bots]:
+        return None
+    return ["agent", "focus" if inside else "attach", agent_name(team.name, who)]
+
+
+def attach(hub: Path, who: str) -> int:
+    team = load_team(hub)
+    inside = os.environ.get("HERDR_ENV") == "1"
+    args = attach_command(team, who, inside)
+    if args is None:
+        print(f"{who}: 팀에 없는 봇입니다. 봇 목록: master, {', '.join(b.name for b in team.bots)}")
+        return 2
+    if args[-1] not in live_agents():
+        print(f"{who or 'master'}: 실행 중이 아닙니다. herdr-team up 으로 띄우세요.")
+        return 2
+    if inside:
+        herdr.run(*args)   # switches the herdr view to that agent's pane
+        return 0
+    # Outside herdr: hand this terminal over to the agent's terminal.
+    os.execvp(os.environ.get("HERDR_BIN_PATH", "herdr"), ["herdr", *args])
+
+
+# ---- restart -------------------------------------------------------------------
+
+def restart(hub: Path, names: list[str], force: bool = False, wait: float = 20.0) -> int:
+    """Stop the named bots (or every bot when names is empty) and start them again with `up`,
+    so edited SOUL.md, folders and triggers take effect. A working bot is skipped unless force."""
+    if master_only(hub, "restart"):
+        return 2
+    team = load_team(hub)
+    wanted = names or [b.name for b in team.bots]
+    unknown = [n for n in wanted if n not in [b.name for b in team.bots]]
+    if unknown:
+        print(f"팀에 없는 봇입니다: {', '.join(unknown)}")
+        return 2
+    live = live_agents()
+    stopping = []
+    for name in wanted:
+        agent = live.get(agent_name(team.name, name))
+        if agent is None:
+            continue   # not running: `up` starts it
+        if agent.get("agent_status") in ("working", "blocked") and not force:
+            print(f"{name}: 지금 {agent['agent_status']} 상태라 건너뜁니다. 끝난 뒤 다시 하거나 --force 를 붙이세요.")
+            continue
+        herdr.run("agent", "prompt", agent_name(team.name, name), "/exit")
+        stopping.append(agent_name(team.name, name))
+    if not stopping and any(agent_name(team.name, n) in live for n in wanted):
+        return 2   # every running bot was skipped
+    deadline = time.monotonic() + wait
+    while stopping and time.monotonic() < deadline:
+        time.sleep(0.5)
+        gone = set(stopping) - set(live_agents())
+        stopping = [n for n in stopping if n not in gone]
+    if stopping:
+        print(f"종료되지 않았습니다: {', '.join(stopping)} — 그 창에서 확인하세요.")
+    time.sleep(1.0)   # let the shells come back to their prompts
+    return up(hub, focus=False)
+
+
+# ---- roster / peek / nudge / question -----------------------------------------
+
+def _agent_for(team: Team, who: str) -> tuple[str, dict | None]:
+    name = agent_name(team.name, who)
+    return name, live_agents().get(name)
+
+
+def _known(team: Team, who: str) -> bool:
+    return who == "master" or any(b.name == who for b in team.bots)
+
+
+def roster(hub: Path) -> int:
+    team = load_team(hub)
+    try:
+        live = live_agents()
+    except herdr.HerdrError:
+        live = {}
+
+    def status(who: str) -> str:
+        return live.get(agent_name(team.name, who), {}).get("agent_status", "실행 중이 아님")
+    print(f"- master: 사용자와 전체 맥락을 이어가고 일을 배정한다. [{status('master')}]")
+    for bot, line in zip(team.bots, roster_lines(team)):
+        print(f"{line} [{status(bot.name)}]")
+    return 0
+
+
+def peek(hub: Path, who: str) -> int:
+    team = load_team(hub)
+    if not _known(team, who):
+        print(f"{who}: 팀에 없는 봇입니다.")
+        return 2
+    name, agent = _agent_for(team, who)
+    if agent is None:
+        print(f"{who}: 실행 중이 아닙니다.")
+        return 2
+    print(f"{who}: {agent.get('agent_status')} · {agent.get('terminal_title_stripped') or ''}")
+    task = load_tasks(hub).get(who)
+    if task:
+        print(f"열린 작업 {task['id']} ({int((time.time() - task.get('sent_at', time.time())) // 60)}분 전): {task.get('title', '')}")
+    session = (agent.get("agent_session") or {}).get("value", "")
+    digest = transcript_digest(transcript_path(session, agent.get("cwd", ""))) if session else {"last_tool": "", "texts": []}
+    if digest["last_tool"]:
+        print(f"마지막 도구: {digest['last_tool']}")
+    for text in digest["texts"]:
+        print("· " + " ".join(text.split()))
+    if not digest["texts"] and not digest["last_tool"]:  # no readable session record: show the bottom of the screen
+        screen = [l for l in herdr.text("agent", "read", name, "--source", "visible").splitlines() if l.strip()]
+        print("\n".join(screen[-15:]))
+    return 0
+
+
+def nudge(hub: Path, who: str, text: str) -> int:
+    if master_only(hub, "nudge"):   # a nudge reads as the master's direction; bots ask questions instead
+        return 2
+    team = load_team(hub)
+    if not _known(team, who) or who == "master":
+        print(f"{who}: 팀에 없는 봇입니다.")
+        return 2
+    name, agent = _agent_for(team, who)
+    if agent is None:
+        print(f"{who}: 실행 중이 아닙니다.")
+        return 2
+    if agent.get("agent_status") == "blocked":
+        print(f"{who}: 사용자 확인을 기다리는 중이라 보낼 수 없습니다. 사용자에게 알리세요.")
+        return 2
+    herdr.run("agent", "prompt", name, f"[herdr-team 전달] {text}")
+    append_log(hub, "nudge", who, text=text.strip().splitlines()[0] if text.strip() else "")
+    print(f"{who} nudged")
+    return 0
+
+
+def question(hub: Path, target: str, text: str, timeout: float = 100.0, poll: float = 1.0) -> int:
+    team = load_team(hub)
+    asker = caller(hub)
+    if not _known(team, target):
+        print(f"{target}: 팀에 없는 봇입니다.")
+        return 2
+    if target == asker:
+        print("자기 자신에게는 물을 수 없습니다.")
+        return 2
+    with locked(hub):
+        open_q = load_questions(hub)
+        if question_blocked(open_q, asker, target):
+            print(f"{target} 이 너에게 보낸 질문이 아직 열려 있습니다. 그 질문에 먼저 답하세요.")
+            return 2
+        name, agent = _agent_for(team, target)
+        if agent is None:
+            print(f"{target}: 실행 중이 아닙니다.")
+            return 2
+        if agent.get("agent_status") == "blocked":
+            print(f"{target}: 사용자 확인을 기다리는 중이라 물을 수 없습니다.")
+            return 2
+        qid = next_question_id(hub)
+        answer = state_dir(hub) / "answers" / f"{qid}-{target}.md"
+        herdr.run("agent", "prompt", name,
+                  f"[herdr-team 질문 {qid}] {asker} 의 질문이다:\n\n{text}\n\n"
+                  f"답을 아래 파일에 5~15줄로 써라. 파일만 쓰고, 하던 일이 있으면 그대로 이어가라.\n{answer}")
+        save_questions(hub, open_q + [{"id": qid, "from": asker, "to": target, "answer": str(answer), "sent_at": time.time()}])
+        append_log(hub, "question", target, qid, text.strip().splitlines()[0] if text.strip() else "", sender=asker)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if answer.exists() and answer.stat().st_size > 0:
+            time.sleep(0.3)  # let the writer finish
+            append_log(hub, "answer", target, qid, sender=asker)
+            print(answer.read_text(encoding="utf-8", errors="replace").strip())
+            return 0
+        time.sleep(poll)
+    print(f"{target} 이 아직 답하지 않았습니다. 답은 이 파일에 옵니다: {answer}")
+    return 3
+
+
+# ---- watch: polling triggers ---------------------------------------------------
+
+class WatchState:
+    def __init__(self) -> None:
+        self.next_at: dict[str, float] = {}   # trigger key → when to run next
+        self.every: dict[str, str] = {}       # trigger key → the interval that deadline was computed from
+        self.told_blocked: set[str] = set()   # task ids the master was already told are blocked
+        self.warned: set[str] = set()
+        # ponytail: notices for the master live in memory; they are lost if `watch` restarts.
+        self.pending: list[str] = []
+
+
+def _run_trigger(hub: Path, command: str) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(["sh", "-c", command], cwd=hub, capture_output=True, timeout=120)
+        # Output is arbitrary bytes from outside; make it safe to store and to pass as an argument.
+        return proc.returncode, proc.stdout.decode("utf-8", errors="replace").replace("\0", "")
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
+
+
+def watch_tick(hub: Path, state: WatchState, now: float) -> None:
+    """One pass: run due triggers, collect finished trigger tasks, tell the master."""
+    team = load_team(hub)   # re-read every pass so spec edits apply without a restart
+    if team is None:
+        return
+    for bot in team.bots:
+        for trig in bot.triggers:
+            key = f"{bot.name}.{trig.name}"   # '.' cannot appear in either name, so keys never collide
+            every = parse_every(trig.every)
+            if every is None:
+                if key not in state.warned:
+                    state.warned.add(key)
+                    print(f"{key}: every = {trig.every!r} 를 이해하지 못했습니다 (예: 30s, 10m, 2h). 건너뜁니다.", flush=True)
+                continue
+            if state.every.get(key) != trig.every:   # new or edited interval: run now
+                state.every[key] = trig.every
+                state.next_at.pop(key, None)
+            if now < state.next_at.get(key, 0.0):
+                continue
+            state.next_at[key] = now + every
+            last = state_dir(hub) / "triggers" / f"{key}.last"
+            prev = last.read_text(encoding="utf-8", errors="replace") if last.exists() else None
+            code, out = _run_trigger(hub, trig.run)
+            if trigger_fire(prev, out, code):
+                sent, info = send_task(hub, team, bot, f"{trig.prompt}\n\n트리거 `{trig.name}` 의 명령 출력:\n{out[:4000]}",
+                                       origin="trigger", note=trig.name)
+                print(f"{key}: {'보냄 ' + info if sent else '건너뜀 — ' + info}", flush=True)
+                if not sent:
+                    continue   # keep the old baseline so the next pass tries again
+            if code == 0:
+                last.write_text(out, encoding="utf-8")
+
+    tasks = {b: t for b, t in load_tasks(hub).items() if t.get("origin") == "trigger"}
+    if tasks or state.pending:
+        agents = live_agents()
+        done = []
+        for bot, state_name in task_states(team, tasks, agents).items():
+            if state_name == "blocked" and tasks[bot]["id"] not in state.told_blocked:
+                state.told_blocked.add(tasks[bot]["id"])
+                append_log(hub, "blocked", bot, tasks[bot]["id"])
+                state.pending.append(f"[herdr-team] {bot} 이 트리거 '{tasks[bot].get('title', '')}' 작업 중 사용자 확인을 "
+                                     "기다리고 있다. 사용자에게 알려라.")
+            if state_name in ("reported", "no_report"):
+                task = tasks[bot]
+                done.append((bot, task["id"]))
+                append_log(hub, "trigger_done", bot, task["id"], task.get("title", ""))
+                report = task["report"] if os.path.exists(task.get("report", "")) else "보고서 없음"
+                state.pending.append(f"[herdr-team] {bot} 이 트리거 '{task.get('title', '')}' 작업을 마쳤다. 보고서: {report}")
+                print(f"{bot}: 트리거 작업 {task['id']} {state_name}", flush=True)
+        if done:
+            update_tasks(hub, lambda t: [t.pop(b) for b, tid in done if t.get(b, {}).get("id") == tid])
+        master = agents.get(agent_name(team.name, "master"))
+        del state.pending[:-20]   # the master may be away for a long time; keep only the latest notices
+        if state.pending and master and master.get("agent_status") in ("idle", "done"):
+            herdr.run("agent", "prompt", agent_name(team.name, "master"), "\n".join(state.pending))
+            state.pending.clear()
+
+
+def watch(hub: Path, tick: float = 5.0) -> int:
+    if master_only(hub, "watch"):
+        return 2
+    state = WatchState()
+    print(f"herdr-team watch: {hub} 의 트리거를 지켜봅니다. Ctrl+C 로 멈춥니다.", flush=True)
+    while True:
+        try:
+            watch_tick(hub, state, time.monotonic())
+        except herdr.HerdrError as e:
+            print(f"herdr 오류 (계속 시도): {e.message}", flush=True)
+        except Exception as e:   # one bad trigger must not stop the others; `up` does not restart watch
+            print(f"오류 (계속 시도): {type(e).__name__}: {e}", flush=True)
+        time.sleep(tick)
