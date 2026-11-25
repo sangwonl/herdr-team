@@ -79,8 +79,9 @@ def bus_line(width: int, origin: int, centers: list[int]) -> str:
         out[x] = "─"
     for c in centers:
         out[c] = "┬"
-    out[lo] = "┌" if lo in centers else "└"
-    out[hi] = "┐" if hi in centers else "┘"
+    # An end that is also the origin needs an arm up to the master's tap.
+    out[lo] = ("├" if lo == origin else "┌") if lo in centers else "└"
+    out[hi] = ("┤" if hi == origin else "┐") if hi in centers else "┘"
     if lo == hi:
         out[lo] = "│"
     elif origin in centers and lo < origin < hi:
@@ -88,6 +89,31 @@ def bus_line(width: int, origin: int, centers: list[int]) -> str:
     elif lo < origin < hi:
         out[origin] = "┴"
     return "".join(out)
+
+
+def tap_col(x: int, w: int, title: str) -> int | None:
+    """Column where a connector meets the top border of a card at x, w wide: its middle, but never under
+    the title (draw_card writes the ┴ only after it). None when the card is too narrow for one."""
+    tw = min(display_width(title), max(0, w - 7))     # the title width draw_card keeps
+    col = max(x + w // 2, x + 3 + tw + 2)
+    return col if col <= x + w - 2 else None
+
+
+def card_width(w: int, cols: int) -> int:
+    return w if w <= CARD_W else (w - (cols - 1)) // cols
+
+
+def connector_layout(w: int, titles: list[str]) -> tuple[int, list[int | None]]:
+    """(origin, taps): the master's column and, per card in the first grid row, its tap column (or None).
+    The origin sits midway between the outer taps, so the trunk meets the bus between or on cards, evenly."""
+    cols = grid_columns(w, len(titles))
+    cw = card_width(w, cols)
+    taps = [tap_col(c * (cw + 1), cw, titles[c]) for c in range(min(cols, len(titles)))]
+    real = [t for t in taps if t is not None]
+    return ((real[0] + real[-1]) // 2 if real else w // 2), taps
+
+
+BOLD_BUS = str.maketrans("─┬┴┼┌┐└┘├┤│", "━┳┻╋┏┓┗┛┣┫┃")
 
 
 def palette_index(name: str, names: list[str]) -> int:
@@ -402,29 +428,30 @@ def draw(win, title: str, master: Card | None, cards: list[Card], rows: list[dic
     y = 1
     offset = 1 if master else 0
     cols = grid_columns(w, len(cards))
-    cw = w if w <= CARD_W else (w - (cols - 1)) // cols
+    cw = card_width(w, cols)
     card_rows = (len(cards) + cols - 1) // cols
     foot = 1 + (1 if error else 0)
     connect = bool(master and cards and h - y - CARD_H - 2 - foot >= CARD_H)
-    centers = [c * (cw + 1) + cw // 2 for c in range(min(cols, len(cards)))] if connect else []
-    # Start the fan-out from the card column nearest the middle, so the trunk meets a branch cleanly.
-    origin = min(centers, key=lambda c: abs(c - w // 2)) if centers else w // 2
+    origin, taps = connector_layout(w, [c.title for c in cards]) if connect else (w // 2, [])
+    centers = [tap for tap in taps if tap is not None]
     if master is not None:
         draw_card(win, y, 0, w, master, view.sel == 0, t, view, tap_bottom=origin if connect else None)
         y += CARD_H
     if connect:
         line = color("dim")
-        safe_addstr(win, y, 0, bus_line(w, origin, centers), line)
-        for i, cx in enumerate(centers):
+        bus = bus_line(w, origin, centers)
+        safe_addstr(win, y, 0, bus, line)
+        for card, cx in zip(cards, taps):
+            if cx is None:
+                continue
             safe_addstr(win, y + 1, cx, "│", line)
-            card = cards[i]
             if card.status == "working" and card.since:      # a heavy segment runs from the master to a working bot
                 steps = abs(cx - origin) + 1
                 pos = int(t * 20) % (steps + 8)
                 hot = name_color(view, card.title)
                 if pos < steps:
                     px = origin + (pos if cx >= origin else -pos)
-                    safe_addstr(win, y, px, "━" if px not in centers and px != origin else "╋", hot)
+                    safe_addstr(win, y, px, bus[px].translate(BOLD_BUS), hot)
                 elif pos == steps:
                     safe_addstr(win, y + 1, cx, "┃", hot)
         y += 2
@@ -437,7 +464,7 @@ def draw(win, title: str, master: Card | None, cards: list[Card], rows: list[dic
     for i, card in enumerate(cards):
         r, c = divmod(i, cols)
         if first_row <= r < first_row + visible_rows:
-            tap = centers[c] if connect and r == 0 and first_row == 0 and c < len(centers) else None
+            tap = taps[c] if connect and r == 0 and first_row == 0 and c < len(taps) else None
             draw_card(win, y + (r - first_row) * CARD_H, c * (cw + 1), cw, card, view.sel == i + offset, t, view,
                       tap_top=tap)
     if not everything:

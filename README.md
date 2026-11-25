@@ -46,14 +46,25 @@ herdr-team up            # opens the master, the board and one tab per bot
 
 ## Set up and edit a team
 
-Run `herdr-team edit` in the hub, or the `team-setup` action inside herdr (opens a popup). The same editor creates a team and changes it later. `init` is another name for `edit`. Nothing changes until you save with `s`.
+Run `herdr-team edit` in the hub, or the `team-setup` action inside herdr (opens a popup). The same editor creates a team and changes it later. `init` is another name for `edit`.
+
+The main screen lists the project, the team-wide instructions and the bots on the left, with a preview of the selected bot (folders, purpose, triggers, the start of its instructions) on the right. On a narrow window the preview moves below the list. The key hints for each screen are in the footer.
+
+| Screen | Keys |
+|---|---|
+| Main | `Enter` edit · `n` add bot · `d` remove bot · `e` edit team-wide instructions · `s` save · `Esc` quit |
+| Bot | `Enter` edit field · `e` open `SOUL.md` in your editor · `s` done · `Esc` cancel |
+| Folders | `Space` select · `f` make working folder · `a` add another path · `Enter` done · `Esc` cancel or previous step |
+| Triggers | `Enter` edit · `n` add · `d` delete · `Esc` back |
+| Text fields | `Enter` confirm · `Ctrl+U` clear · `Esc` cancel or previous step |
 
 - On first run, the hub itself (if it is a repo) and each repo directly under it get a bot. Remove the ones you don't need with `d`.
-- **Add a bot** (`n`): name → folders → template → one-sentence purpose. Pick zero or more folders. With none, the bot works in its own home folder. Several bots may share a repo.
-- **Edit a bot** (`Enter`): name, folders (`f` sets the working folder, `a` adds another path), purpose, triggers.
-  Renaming moves the bot's home folder and updates the `SOUL.md` title. The purpose is the first paragraph of `SOUL.md`.
-- **Delete a bot** (`d`): removes it from the team only. Its `SOUL.md` and `MEMORY.md` stay on disk.
-- After saving, the editor offers to start the team. Bots that are already running keep the old settings until you run `herdr-team restart [bot...]`. Start newly added bots with `herdr-team up`.
+- **Add a bot** (`n`): a four-step form, name → folders → template → one-sentence purpose. `Esc` goes back a step. Input errors (such as a name already in use) show under the field as you type. Pick zero or more folders. With none, the bot works in its own home folder. Several bots may share a repo.
+- **Edit a bot** (`Enter`): name, folders, purpose, instructions, triggers. Renaming moves the bot's home folder and updates the `SOUL.md` title. The purpose is the first paragraph of `SOUL.md`. `Enter` on the instructions row re-applies a template.
+- **Remove a bot** (`d`): removes it from the team only. Its `SOUL.md` and `MEMORY.md` stay on disk.
+- `e` opens the file in `$VISUAL` or `$EDITOR` (`vi` if neither is set). A new bot has no `SOUL.md` until you save the team.
+- **Saving** (`s`) first shows what will change: `+` added, `~` changed, `-` removed. Confirm with `s` or `Enter`. Everything else stays in memory until then, except files you edit with `e`, which your editor writes right away.
+- After saving, if the team is running, the editor offers to restart only the bots that changed. If it isn't running, it offers to start it. You can also do this later with `herdr-team restart [bot...]` or `herdr-team up`.
 
 ### Team spec: `herdr-team.toml`
 
@@ -80,11 +91,38 @@ prompt = "There are new review requests. Review any PR you haven't seen yet."
 
 | File | Written by | Contents |
 |---|---|---|
-| `SOUL.md` | you | Who the bot is. First paragraph after the title is its purpose (shown in the roster and board), then `## How I work` and `## Never` |
+| `SOUL.md` | you | Who the bot is. First paragraph after the title is its purpose (shown in the roster and board), then `## How I work`, `## Never` and `## Extra` |
 | `MEMORY.md` | the bot | Lasting facts useful in any conversation. Survives restarts |
 | `PREAMBLE.md` | herdr-team | Rebuilt on every `up`: SOUL, roster, where shared context lives, working rules. Don't edit |
 
-Templates for a new `SOUL.md`: `developer`, `repo-owner`, `reviewer`, `writer`, `researcher`, `blank`. New bots with folders default to `developer`, bots without folders to `researcher`. A template is only a draft: edit `SOUL.md` yourself. To apply a different template to an existing bot, choose "re-apply template" under the bot's instructions in the editor (title and purpose are kept, the other sections are replaced).
+### Instructions: three layers
+
+Every bot's instructions come from three places, from general to specific:
+
+1. **Template defaults**: the `## How I work` and `## Never` sections a template writes into a new `SOUL.md`.
+2. **Team-wide instructions**: `.herdr-team/instructions.md`, created with commented-out starter text the first time the editor saves or any `herdr-team` command sets up the team folder. Edit it with `e` on the editor's main screen. It goes to every bot and to the master, and takes priority over their other rules. A file with nothing but HTML comments (the starter text) is ignored.
+3. **Per-bot extras**: the `## Extra` section at the end of each `SOUL.md`. It is kept word for word when you re-apply a template.
+
+Bots and the master read these at start, so run `herdr-team restart` for bots after a change. The master has no restart: `/exit` it and run `herdr-team up`.
+
+### Templates
+
+| Template | For |
+|---|---|
+| `developer` | Writing code and proving it with tests (default for bots with folders) |
+| `frontend` | UI work: reuses the design system, checks in a browser, keeps accessibility |
+| `backend` | APIs and storage: follows the contracts in `context.md`, reversible migrations, no silent breaking changes |
+| `devops` | Build, deploy, infra: plan or dry-run before apply, never touches production or secrets without an explicit OK |
+| `qa` | Reproduces first, cuts to a minimal repro, adds a regression test |
+| `security` | Audits only the authorized scope, proves without exploiting further, reports severity |
+| `data` | Analysis and pipelines: validates inputs, never mutates source data, states assumptions and sample sizes |
+| `repo-owner` | Owns one repo and keeps changes inside it |
+| `reviewer` | Reviews and reports; doesn't change code |
+| `writer` | Docs and explanations, checked against the code |
+| `researcher` | Research with no repo (default for bots without folders) |
+| `blank` | Empty sections to fill in yourself |
+
+A template is only a draft: edit `SOUL.md` yourself. Re-applying a template to an existing bot keeps the title, purpose and `## Extra`, and replaces the other sections. Any other `*.md` file in `herdr_team/templates/` also shows up as a template.
 
 ## Start the team
 
@@ -130,7 +168,7 @@ Use `edit` to change a bot's folders, purpose, triggers or template, and `attach
 
 ```sh
 herdr-team edit            # Enter on the web bot → change its folders → s to save
-herdr-team restart web     # apply to the running bot (for a newly added bot: herdr-team up)
+herdr-team restart web     # apply to the running bot (the editor offers this after saving)
 herdr-team attach web      # jump to web's pane and check its first screen
 herdr-team attach          # back to the master
 ```

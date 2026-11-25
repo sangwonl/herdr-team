@@ -134,7 +134,7 @@ def test_agent_args():
     hub = Path("/tmp/my hub")
     team = Team("p", [Bot("a", ["./a", "./b"], "")], ["--permission-mode", "acceptEdits"], hub)
     m = team_mod.master_args(team)
-    assert m[0] == "--append-system-prompt-file" and m[1].endswith("master-prompt.md") and Path(m[1]).is_absolute()
+    assert m[0] == "--append-system-prompt-file" and m[1] == "/tmp/my hub/.herdr-team/MASTER.md"
     assert team_mod.master_args(team)[2:] == ["--allowedTools", "Bash(herdr-team *)", "Edit(//tmp/my hub/.herdr-team/context.md)"]
     assert team_mod.bot_args(team, team.bots[0]) == [
         "--append-system-prompt-file", "/tmp/my hub/.herdr-team/bots/a/PREAMBLE.md",
@@ -277,7 +277,8 @@ def test_review_fixes():
 def test_v2_model():
     from .core import (TEMPLATES, bot_cwd, bot_home, ensure_home, render_preamble, render_soul,
                        soul_description)
-    assert set(TEMPLATES) == {"developer", "repo-owner", "reviewer", "writer", "researcher", "blank"}
+    assert {"developer", "repo-owner", "reviewer", "writer", "researcher", "blank"} <= set(TEMPLATES)
+    assert list(TEMPLATES)[-1] == "blank"
     assert list(TEMPLATES)[0] == "developer"                              # 맨 위, 가장 흔한 선택
     dev = render_soul("developer", "dev", "기능 구현 담당")
     assert soul_description(dev) == "기능 구현 담당" and "테스트" in dev and "## Never" in dev
@@ -626,9 +627,12 @@ esac
             with contextlib.redirect_stdout(out):
                 assert team_mod.restart(hub, ["w"]) == 2 and ups == [] and not (hub / "exited").exists()
                 assert team_mod.restart(hub, ["nobody"]) == 2
+                # 떠 있는 봇은 일하는 중이라 건너뛰어도, 아직 안 뜬 새 봇은 up 으로 띄운다
+                commit(hub, "p", [Draft(load_team(hub).bots[0], None, "w"), Draft(Bot("n", [], "새 봇"), "blank", None)], [])
+                assert team_mod.restart(hub, ["w", "n"]) == 2 and ups == [hub] and not (hub / "exited").exists()
                 (hub / "st").write_text("idle")
                 assert team_mod.restart(hub, ["w"], wait=3) == 0
-            assert (hub / "exited").exists() and ups == [hub]
+            assert (hub / "exited").exists() and ups == [hub, hub]
         finally:
             team_mod.up = real_up
             del os.environ["HERDR_BIN_PATH"]
@@ -650,6 +654,108 @@ def test_python_version_check():
     from . import version_error
     assert version_error((3, 9, 6)) == "herdr-team needs Python 3.11+ (found 3.9)"
     assert version_error((3, 11, 0)) is None and version_error((3, 13, 1)) is None
+
+
+def test_setup_upgrade():
+    from .core import (EXTRA_RE, apply_template, ensure_instructions, render_preamble, render_soul,
+                       soul_description, template_preview, user_instructions)
+    from .wizard import Draft, bot_preview, change_summary, changed_bots, commit, run_steps, wrap
+    # 새 SOUL 에는 빈 ## Extra 절이 붙는다
+    soul = render_soul("developer", "dev", "기능 담당")
+    assert soul.count("## Extra") == 1 and soul.rstrip().endswith("-->") and soul_description(soul) == "기능 담당"
+    assert template_preview("developer")[0] == "## How I work" and not any("Extra" in ln for ln in template_preview("developer"))
+    # 템플릿을 다시 적용해도 ## Extra 는 글자 그대로 남는다
+    mine = soul.replace("-->\n", "-->\n- 항상 한국어로 보고한다.\n\n### 메모\n- 세부\n")
+    new = apply_template(mine, "reviewer", "dev")
+    assert EXTRA_RE.search(new).group(0) == EXTRA_RE.search(mine).group(0)
+    assert "지적한다" in new and "테스트를 먼저" not in new and soul_description(new) == "기능 담당"
+    # Extra 가 가운데 있어도 그 절만 남고, 뒤의 템플릿 절은 새 템플릿 것으로 바뀐다
+    # ## Extra 부터 파일 끝까지가 사용자 것: 소제목, 두 번째 Extra 까지 글자 그대로
+    tail = "## Extra\n- 내 지침\n\n## Notes\n- 소제목 아래\n\n## Extra\n- 두 번째\n"
+    got = apply_template("# a\n\n목적\n\n## How I work\n- 옛것\n\n" + tail, "reviewer", "a")
+    assert got.endswith(tail) and "옛것" not in got and "지적한다" in got and soul_description(got) == "목적"
+    # CRLF 로 저장된 SOUL.md 도 Extra 가 남는다
+    crlf = apply_template("# a\r\n\r\n목적\r\n\r\n## How I work\r\n- x\r\n\r\n## Extra\r\n- 윈도우\r\n", "blank", "a")
+    assert crlf.endswith("## Extra\n- 윈도우\n") and "\r" not in crlf and soul_description(crlf) == "목적"
+    # Extra 가 없던 SOUL.md 는 다시 적용하면 빈 Extra 가 생긴다
+    assert apply_template("# a\n\n목적\n\n## How I work\n- x\n", "blank", "a").count("## Extra") == 1
+    with tempfile.TemporaryDirectory() as d:
+        hub = Path(d).resolve()
+        # 팀 공통 지침: 주석만 있으면 빠지고, 내용이 있으면 PREAMBLE 과 마스터 프롬프트에 들어간다
+        commit(hub, "p", [Draft(Bot("a", [], "목적"), "developer", None)], [])
+        assert (hub / ".herdr-team/instructions.md").exists() and user_instructions(hub) == ""
+        team = load_team(hub)
+        assert "사용자 지침" not in render_preamble(team, team.bots[0]) and "사용자 지침" not in team_mod.master_prompt(hub)
+        ensure_instructions(hub).write_text("<!-- 주석 -->\n- 보고 전에 테스트를 돌린다.\n")
+        assert user_instructions(hub) == "- 보고 전에 테스트를 돌린다."
+        ensure_instructions(hub).write_text("- 진짜 지침\n<!--\n- 예시 (닫는 표시를 지움)\n")
+        assert user_instructions(hub) == "- 진짜 지침"                    # 닫히지 않은 주석은 끝까지 주석
+        ensure_instructions(hub).write_text("<!-- 주석 -->\n- 보고 전에 테스트를 돌린다.\n")
+        pre = render_preamble(team, team.bots[0])
+        assert "사용자 지침 (팀 공통)" in pre and "- 보고 전에 테스트를 돌린다." in pre and "주석" not in pre
+        mp = team_mod.master_prompt(hub)
+        assert mp.startswith("# 너는 이 프로젝트의 마스터다") and "- 보고 전에 테스트를 돌린다." in mp
+        # 미리보기와 저장 전 요약, 다시 띄울 봇
+        rows = bot_preview(hub, Draft(team.bots[0], None, "a"))
+        text = "\n".join("".join(t for t, _ in r) for r in rows)
+        assert "SOUL.md" in text and "## Extra" in text and "봇의 홈" in text
+        fresh = Draft(Bot("b", ["./b"], ""), None, None)
+        assert "developer" in "".join(t for r in bot_preview(hub, fresh) for t, _ in r)   # 폴더가 있으면 developer
+        same = Draft(copy_bot(team.bots[0]), None, "a")
+        assert change_summary(team, "p", [same], set(), False) == [[("바뀐 것이 없습니다", "dim")]]
+        assert changed_bots(team, [same], set(), False) == []
+        assert changed_bots(team, [same], {"a"}, False) == ["a"]          # SOUL.md 를 편집기로 고쳤다
+        assert changed_bots(team, [same], set(), True) == ["a"]           # 공통 지침이 바뀌면 모두
+        moved = Draft(Bot("a2", ["./x"], "목적"), None, "a", reapply="writer")
+        summary = ["".join(t for t, _ in r) for r in change_summary(team, "q", [moved, fresh], set(), False)]
+        assert summary[0].startswith("~ 프로젝트 이름 p → q")
+        assert "이름 a → a2 (홈 폴더 이동)" in summary[1] and "폴더 리포 없음 → ./x" in summary[1] and "writer" in summary[1]
+        assert summary[2].startswith("+ b") and len(summary) == 3
+        assert changed_bots(team, [moved, fresh], set(), False) == ["a2", "b"]
+        gone = ["".join(t for t, _ in r) for r in change_summary(team, "p", [fresh], set(), False)]
+        assert any(r.startswith("- a") for r in gone)
+    # 단계 입력: None 이면 한 단계 뒤로, 첫 단계에서 None 이면 취소
+    answers = iter(["x", None, "y", "z"])
+    assert run_steps([lambda v, i: next(answers)] * 2) == ["y", "z"]
+    assert run_steps([lambda v, i: None]) is None
+    assert wrap("가나 다라 마바", 5) == ["가나", "다라", "마바"]
+
+
+def copy_bot(b):
+    import copy
+    return copy.deepcopy(b)
+
+
+def test_board_connectors():
+    from .board import bus_line, card_width, connector_layout, grid_columns
+    names = ["api", "core-engineer", "리포-없는-긴-이름", "reviewer-bot", "w"]
+    for w in (30, 45, 60, 80, 100, 120, 150, 200):
+        for n in range(1, 6):
+            for rot in range(len(names)):
+                titles = (names[rot:] + names[:rot])[:n]
+                origin, taps = connector_layout(w, titles)
+                real = [t for t in taps if t is not None]
+                cols = grid_columns(w, n)
+                cw = card_width(w, cols)
+                assert len(taps) == min(cols, n)
+                if not real:
+                    continue
+                bus = bus_line(w, origin, real)
+                where = (w, titles)
+                # ① 트렁크는 양 끝 갈림의 가운데. 짝수 개면 어느 갈림과도 겹치지 않는다
+                assert real[0] <= origin <= real[-1] and abs((origin - real[0]) - (real[-1] - origin)) <= 1, where
+                if len(real) % 2 == 0:
+                    assert origin not in real, where
+                # ② 트렁크 자리에는 위로 가는 팔이 있다 (마스터의 ┬ 와 이어진다)
+                assert bus[origin] in "│┴┼├┤└┘", (where, bus)
+                # ③ 갈림마다 아래로 가는 팔이 있다
+                assert all(bus[t] in "┬┌┐│┼├┤" for t in real), (where, bus)
+                # ④ 갈림은 제목 뒤, 카드 오른쪽 모서리 앞: draw_card 가 ┴ 를 반드시 그린다
+                for c, t in enumerate(taps):
+                    if t is not None:
+                        x = c * (cw + 1)
+                        title_end = x + 3 + min(display_width(titles[c]), max(0, cw - 7))
+                        assert title_end + 1 < t < x + cw - 1, where
 
 
 def run() -> int:

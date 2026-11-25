@@ -182,7 +182,7 @@ def resolve_repo(hub: Path, repo: str) -> Path:
     return p if p.is_absolute() else Path(os.path.normpath(hub / p))
 
 
-GITIGNORE = "tasks.json\nquestions.json\nqseq\nlog.jsonl\nlock\n*.tmp\nreports/\nanswers/\ntriggers/\nPREAMBLE.md\n"
+GITIGNORE = "tasks.json\nquestions.json\nqseq\nlog.jsonl\nlock\n*.tmp\nreports/\nanswers/\ntriggers/\nPREAMBLE.md\nMASTER.md\n"
 
 
 def state_dir(hub: Path) -> Path:
@@ -196,7 +196,41 @@ def state_dir(hub: Path) -> Path:
     if not context.exists():
         context.write_text("# 프로젝트 맥락\n\n마스터가 유지한다. 모든 봇이 일을 시작하기 전에 읽는다.\n\n"
                            "## 목표\n\n## 리포 간 약속\n\n## 결정 사항\n", encoding="utf-8")
+    ensure_instructions(hub)
     return sd
+
+
+def ensure_instructions(hub: Path) -> Path:
+    path = hub / ".herdr-team" / "instructions.md"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(INSTRUCTIONS_STARTER, encoding="utf-8")
+    return path
+
+
+INSTRUCTIONS_STARTER = """<!--
+팀 공통 지침. 여기 적은 것은 모든 봇과 마스터에게 사용자 지침으로 전달된다 (다시 띄운 뒤부터).
+예:
+- 보고하기 전에 항상 테스트를 돌리고 결과를 적는다.
+- 커밋 메시지는 영어로 쓴다.
+이 주석만 있으면 아무것도 전달되지 않는다.
+-->
+"""
+
+
+def user_instructions(hub: Path) -> str:
+    """The team-wide user instructions with HTML comments removed; "" when there is nothing else.
+    An unclosed <!-- runs to the end of the file, as in HTML, so the starter's examples never leak out."""
+    return re.sub(r"<!--.*?(?:-->|\Z)", "", _read(hub / ".herdr-team" / "instructions.md"), flags=re.S).strip()
+
+
+def instructions_block(hub: Path) -> list[str]:
+    text = user_instructions(hub)
+    if not text:
+        return []
+    return ["## 사용자 지침 (팀 공통)", "",
+            f"사용자가 팀 전체에 정한 지침이다 ({hub / '.herdr-team' / 'instructions.md'}). 다른 규칙보다 우선해 따른다.",
+            "", "<user-instructions>", text, "</user-instructions>", ""]
 
 
 def _read(path: Path) -> str:
@@ -208,9 +242,26 @@ def _read(path: Path) -> str:
 
 # ---- bot home: SOUL.md, MEMORY.md, PREAMBLE.md --------------------------------
 
-TEMPLATES = {"developer": "개발자 (코드를 짜고 테스트로 확인)", "repo-owner": "리포 담당 (한 리포를 책임지고 관리)",
-             "reviewer": "리뷰어 (고치지 않고 지적만)", "writer": "테크니컬 라이터 (문서와 설명)",
-             "researcher": "조사 담당 (리포 없음)", "blank": "빈 템플릿"}
+TEMPLATE_DIR = Path(__file__).parent / "templates"
+_LABELS = {"developer": "개발자 (코드를 짜고 테스트로 확인)", "frontend": "프론트엔드 (화면, 접근성, 브라우저)",
+           "backend": "백엔드 (API, 저장소, 성능)", "devops": "데브옵스 (빌드, 배포, 인프라)",
+           "qa": "QA (테스트 설계와 재현)", "security": "보안 (취약점 점검)", "data": "데이터 (분석과 파이프라인)",
+           "repo-owner": "리포 담당 (한 리포를 책임지고 관리)", "reviewer": "리뷰어 (고치지 않고 지적만)",
+           "writer": "테크니컬 라이터 (문서와 설명)", "researcher": "조사 담당 (리포 없음)"}
+
+
+def _templates() -> dict[str, str]:
+    """Every templates/*.md: id -> label. Known ones in _LABELS order, then any others by name, blank last."""
+    order = list(_LABELS)
+    ids = sorted((p.stem for p in TEMPLATE_DIR.glob("*.md")),
+                 key=lambda t: (t == "blank", order.index(t) if t in order else len(order), t))
+    return {t: _LABELS.get(t, "빈 템플릿" if t == "blank" else t) for t in ids}
+
+
+TEMPLATES = _templates()
+# '## Extra' to the end of the file belongs to the user (templates put it last), sub-headings and all.
+EXTRA_RE = re.compile(r"^## Extra[ \t]*(?:\n[\s\S]*)?\Z", re.M)
+EXTRA_BLOCK = "## Extra\n<!-- 이 봇에게만 줄 지침을 여기에 적는다. 템플릿을 다시 적용해도 이 절은 그대로 남는다. -->\n"
 SOUL_PLACEHOLDER = "(이 봇이 무엇을 위한 것인지 한 문장으로 적으세요)"
 
 
@@ -219,8 +270,15 @@ def bot_home(hub: Path, name: str) -> Path:
 
 
 def render_soul(template: str, name: str, purpose: str) -> str:
-    text = (Path(__file__).parent / "templates" / f"{template}.md").read_text(encoding="utf-8")
-    return text.replace("{name}", name).replace("{purpose}", purpose.strip() or SOUL_PLACEHOLDER)
+    text = (TEMPLATE_DIR / f"{template}.md").read_text(encoding="utf-8")
+    text = text.replace("{name}", name).replace("{purpose}", purpose.strip() or SOUL_PLACEHOLDER)
+    return text if EXTRA_RE.search(text) else text.rstrip("\n") + "\n\n" + EXTRA_BLOCK
+
+
+def template_preview(template: str, n: int = 8) -> list[str]:
+    """The template's own lines (sections and bullets), without title, purpose and Extra."""
+    body = EXTRA_RE.sub("", render_soul(template, "x", ""))
+    return [ln for ln in body.splitlines() if ln.startswith(("## ", "- "))][:n]
 
 
 def soul_description(soul: str) -> str:
@@ -245,9 +303,14 @@ def set_soul_purpose(soul: str, purpose: str) -> str:
 
 
 def apply_template(soul: str, template: str, name: str) -> str:
-    """Re-apply a template to an existing SOUL.md: keep its title and purpose, take every section from the template."""
-    purpose = soul_description(soul)
-    return render_soul(template, name, purpose)
+    """Re-apply a template to an existing SOUL.md: keep its title, purpose and '## Extra' section;
+    take every other section from the template."""
+    soul = soul.replace("\r\n", "\n")
+    new = render_soul(template, name, soul_description(soul))
+    mine = EXTRA_RE.search(soul)
+    if mine:
+        new = EXTRA_RE.sub(lambda _: mine.group(0).rstrip("\n") + "\n", new, count=1)
+    return new
 
 
 def team_problems(project: str, bots: list[Bot]) -> list[str]:
@@ -279,12 +342,16 @@ def ensure_home(hub: Path, bot: Bot, template: str | None = None) -> Path:
     home.mkdir(parents=True, exist_ok=True)
     soul = home / "SOUL.md"
     if not soul.exists():
-        soul.write_text(render_soul(template or ("repo-owner" if bot.dirs else "researcher"), bot.name, bot.role),
+        soul.write_text(render_soul(template or default_template(bot.dirs), bot.name, bot.role),
                         encoding="utf-8")
     memory = home / "MEMORY.md"
     if not memory.exists():
         memory.write_text("# Memory\n\n한 줄에 사실 하나, 날짜와 함께. 자세한 내용은 이 폴더에 따로 둔다.\n", encoding="utf-8")
     return home
+
+
+def default_template(dirs: list[str]) -> str:
+    return "developer" if dirs else "researcher"
 
 
 def bot_cwd(hub: Path, bot: Bot) -> Path:
@@ -312,6 +379,7 @@ def render_preamble(team: Team, bot: Bot) -> str:
         "",
         "<soul>", soul, "</soul>",
         "",
+        *instructions_block(hub),
         "## 팀",
         "- master: 사용자와 프로젝트 전체 맥락을 이어가고 일을 배정한다.",
         *roster_lines(team, exclude=bot.name),

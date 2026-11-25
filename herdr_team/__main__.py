@@ -120,15 +120,12 @@ def main(argv: list[str] | None = None) -> int:
         hub = need_hub(args)
         return run_herdr(lambda: team.attach(hub, args.bot))
     if args.cmd in ("init", "edit"):
-        from . import team, wizard
+        from . import wizard
         hub = hub_from(args) or Path.cwd().resolve()
         if core.spec_error(hub):
             # Starting from blank defaults here would overwrite roles and agent_args.
             sys.exit(core.spec_error(hub) + "\n파일을 고치거나 지운 뒤 다시 실행하세요.")
-        code = wizard.run_wizard(hub)
-        if code == 0 and wizard.confirm("지금 팀을 띄울까요?"):
-            return run_herdr(lambda: team.up(hub))
-        return code
+        return wizard.run_wizard(hub)
     if args.cmd == "up":
         from . import team
         hub = need_hub(args)

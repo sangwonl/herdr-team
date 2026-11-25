@@ -8,7 +8,7 @@ from . import board, herdr
 from .core import (parse_every, trigger_fire,
                    load_questions, next_question_id, question_blocked, roster_lines, save_questions,
                    transcript_digest, transcript_path,
-                   Bot, Team, agent_name, bot_cwd, bot_home, ensure_home, render_preamble, append_log, build_prompt, classify, load_tasks, load_team,
+                   Bot, Team, agent_name, bot_cwd, instructions_block, bot_home, ensure_home, render_preamble, append_log, build_prompt, classify, load_tasks, load_team,
                    locked, next_task_id, read_log, resolve_repo, save_tasks, state_dir, update_tasks,
                    wait_done)
 
@@ -21,8 +21,14 @@ def _edit(path: Path | str) -> str:
     return f"Edit(/{path})"
 
 
+def master_prompt(hub: Path) -> str:
+    """master-prompt.md plus the team-wide user instructions."""
+    base = (PLUGIN_ROOT / "master-prompt.md").read_text(encoding="utf-8").rstrip("\n")
+    return "\n".join([base, "", *instructions_block(hub)])
+
+
 def master_args(team: Team) -> list[str]:
-    return ["--append-system-prompt-file", str(PLUGIN_ROOT / "master-prompt.md"),
+    return ["--append-system-prompt-file", str(team.hub / ".herdr-team" / "MASTER.md"),
             "--allowedTools", "Bash(herdr-team *)", _edit(team.hub / ".herdr-team" / "context.md")]
 
 
@@ -94,6 +100,7 @@ def up(hub: Path, focus: bool = True) -> int:
         print("master\talready running")
     else:
         try:
+            (hub / ".herdr-team" / "MASTER.md").write_text(master_prompt(hub), encoding="utf-8")
             print(f"master\t{_start(master, master_pane, master_args(team))}")
         except herdr.HerdrError as e:
             failed += 1
@@ -342,8 +349,9 @@ def restart(hub: Path, names: list[str], force: bool = False, wait: float = 20.0
             continue
         herdr.run("agent", "prompt", agent_name(team.name, name), "/exit")
         stopping.append(agent_name(team.name, name))
-    if not stopping and any(agent_name(team.name, n) in live for n in wanted):
-        return 2   # every running bot was skipped
+    skipped = [n for n in wanted if agent_name(team.name, n) in live and agent_name(team.name, n) not in stopping]
+    if skipped and len(skipped) == len(wanted):
+        return 2   # every bot was running and skipped; nothing for `up` to start
     deadline = time.monotonic() + wait
     while stopping and time.monotonic() < deadline:
         time.sleep(0.5)
@@ -352,7 +360,7 @@ def restart(hub: Path, names: list[str], force: bool = False, wait: float = 20.0
     if stopping:
         print(f"종료되지 않았습니다: {', '.join(stopping)} — 그 창에서 확인하세요.")
     time.sleep(1.0)   # let the shells come back to their prompts
-    return up(hub, focus=False)
+    return up(hub, focus=False) or (2 if skipped else 0)   # `up` also starts bots that were not running
 
 
 # ---- roster / peek / nudge / question -----------------------------------------
