@@ -159,30 +159,42 @@ def cards_all(agents: list[dict], workspaces: list[dict]) -> list[Card]:
 
 
 def cards_team(team: Team, agents: list[dict], tasks: dict[str, dict], now: float,
-               report_exists: Callable[[str], bool], tools: dict[str, str] | None = None) -> list[Card]:
-    """Master first, then the team's bots in spec order. Agents outside the team are ignored."""
+               report_exists: Callable[[str], bool], tools: dict[str, str] | None = None,
+               events: list[dict] | None = None) -> list[Card]:
+    """Master first, then the team's bots in spec order. Agents outside the team are ignored.
+
+    Card text comes from our own records, never the terminal title (Claude Code sets that once per
+    session, so it goes stale): the open task, else the bot's last ask/trigger in the log, else blank.
+    """
     by_name = {a.get("name"): a for a in agents if a.get("name")}
     tools = tools or {}
+    events = events or []
+    last = {e.get("bot"): f"{e.get('task', '')} · {e.get('text', '')}"
+            for e in events if isinstance(e, dict) and e.get("kind") in ("ask", "trigger")}
 
-    def card(title: str, sub: str, name: str, task: dict | None, master: bool = False) -> Card:
+    def card(title: str, sub: str, name: str, task: dict | None, text: str, master: bool = False) -> Card:
         agent = by_name.get(name)
         if agent is None:
             return Card(title, sub, "unknown", "", "실행 중이 아님", "", master)
         if task:
             status = classify(task, agent, report_exists(task.get("report", "")))
             return Card(title, sub, status, fmt_elapsed(now - task.get("sent_at", now)),
-                        task.get("title", ""), agent.get("pane_id", ""), master,
+                        f"{task.get('id', '')} · {task.get('title', '')}", agent.get("pane_id", ""), master,
                         since=float(task.get("sent_at", 0) or 0), tool=tools.get(name, ""))
-        return Card(title, sub, agent.get("agent_status", "unknown"), "",
-                    agent.get("terminal_title_stripped") or "", agent.get("pane_id", ""), master,
-                    tool=tools.get(name, ""))
+        # herdr's "done" means "finished a turn, not yet looked at", not that our task is done.
+        status = agent.get("agent_status", "unknown")
+        return Card(title, sub, "idle" if status == "done" else status, "", text,
+                    agent.get("pane_id", ""), master, tool=tools.get(name, ""))
 
-    cards = [card("master", team.name, agent_name(team.name, "master"), None, master=True)]
+    known = [e for e in events if isinstance(e, dict) and e.get("kind") in LOG_KINDS][-1:]
+    latest = " ".join(p for r in log_rows(known) for p in (r["src"], r["icon"], r["dst"],
+                                                           str(known[0].get("task", "")), r["text"]) if p)
+    cards = [card("master", team.name, agent_name(team.name, "master"), None, latest, master=True)]
     for bot in team.bots:
         sub = os.path.basename(bot.dirs[0].rstrip("/")) if bot.dirs else "리포 없음"
         if len(bot.dirs) > 1:
             sub += f" +{len(bot.dirs) - 1}"
-        cards.append(card(bot.name, sub, agent_name(team.name, bot.name), tasks.get(bot.name)))
+        cards.append(card(bot.name, sub, agent_name(team.name, bot.name), tasks.get(bot.name), last.get(bot.name, "")))
     return cards
 
 
@@ -515,10 +527,12 @@ class Poller(threading.Thread):
             self.title, self.master, self.rows, self.names = "all agents", None, [], []
             self.cards = cards_all(agents, herdr.workspaces())
             return
-        cards = cards_team(team, agents, load_tasks(self.hub), time.time(), os.path.exists, self._last_tools(agents))
+        events = read_log(self.hub, 200)
+        cards = cards_team(team, agents, load_tasks(self.hub), time.time(), os.path.exists,
+                           self._last_tools(agents), events)
         self.title, self.names = team.name, [b.name for b in team.bots]
         self.master, self.cards = cards[0], cards[1:]
-        self.rows = log_rows(read_log(self.hub, 200))
+        self.rows = log_rows(events)
 
     def run(self) -> None:
         while True:

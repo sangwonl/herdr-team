@@ -1,5 +1,6 @@
 """Team operations against a live herdr server: up, ask, wait."""
 import os
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -67,6 +68,12 @@ def _start(name: str, pane: str, args: list[str]) -> str:
             raise
 
 
+def _add_bin_to_path(pane: str) -> None:
+    """Prepend the plugin's bin/ to PATH in a pane `up` did not create (so no --env reached its shell)."""
+    # ponytail: POSIX shell syntax (sh, bash, zsh); fish users get `herdr-team` only in tabs up creates.
+    herdr.run("pane", "run", pane, f"export PATH={shlex.quote(str(PLUGIN_ROOT / 'bin'))}:\"$PATH\"")
+
+
 def up(hub: Path, focus: bool = True) -> int:
     if master_only(hub, "up"):
         return 2
@@ -75,7 +82,7 @@ def up(hub: Path, focus: bool = True) -> int:
         print("herdr-team.toml 을 읽지 못했습니다.")
         return 1
     if not team.bots:
-        print("팀에 봇이 없습니다. herdr-team edit 으로 봇을 추가하세요.")
+        print("팀에 봇이 없습니다. team-setup 액션(권장 키 prefix+shift+e)으로 봇을 추가하세요.")
         return 1
     state_dir(hub)
     live = live_agents()
@@ -84,6 +91,7 @@ def up(hub: Path, focus: bool = True) -> int:
     ws = next((w for w in herdr.workspaces() if w.get("label") == team.name), None)
     created = ws is None
     # Agents call `herdr-team`; put this checkout's bin/ on their PATH so no install step is needed.
+    # New tabs get it through --env; panes that already exist get it typed into their shell.
     path = f"{PLUGIN_ROOT / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}"
     if created:
         made = herdr.run("workspace", "create", "--cwd", str(hub), "--label", team.name,
@@ -101,6 +109,8 @@ def up(hub: Path, focus: bool = True) -> int:
     else:
         try:
             (hub / ".herdr-team" / "MASTER.md").write_text(master_prompt(hub), encoding="utf-8")
+            if not created:
+                _add_bin_to_path(master_pane)
             print(f"master\t{_start(master, master_pane, master_args(team))}")
         except herdr.HerdrError as e:
             failed += 1
@@ -129,6 +139,7 @@ def up(hub: Path, focus: bool = True) -> int:
         try:
             if bot.name in tabs:
                 pane = next(p["pane_id"] for p in herdr.panes(ws_id) if p.get("tab_id") == tabs[bot.name])
+                _add_bin_to_path(pane)
             else:
                 pane = herdr.run("tab", "create", "--workspace", ws_id, "--cwd", str(bot_cwd(hub, bot)),
                                  "--label", bot.name, "--env", f"PATH={path}",
@@ -180,6 +191,12 @@ def master_only(hub: Path, command: str) -> int:
     return 2
 
 
+def short_title(text: str, n: int = 60) -> str:
+    """The prompt as one short line, for tasks.json, the log and the board."""
+    title = " ".join(text.split())
+    return title if len(title) <= n else title[:n - 1] + "…"
+
+
 def send_task(hub: Path, team: Team, bot: Bot, text: str, origin: str = "master", note: str = "") -> tuple[bool, str]:
     """Give bot a task. Returns (sent, task id or the reason it was not sent)."""
     with locked(hub):  # check, id allocation, send and record must not interleave with another ask/wait
@@ -193,7 +210,7 @@ def send_task(hub: Path, team: Team, bot: Bot, text: str, origin: str = "master"
         name = agent_name(team.name, bot.name)
         agent = live_agents().get(name)
         if agent is None:
-            return False, "실행 중이 아닙니다. herdr-team up 으로 띄우세요."
+            return False, "실행 중이 아닙니다. team-up 액션(권장 키 prefix+shift+u)으로 띄우세요."
         if agent.get("agent_status") in ("working", "blocked"):
             return False, f"지금 {agent['agent_status']} 상태라 보낼 수 없습니다."
         task_id = next_task_id(hub)
@@ -202,7 +219,7 @@ def send_task(hub: Path, team: Team, bot: Bot, text: str, origin: str = "master"
             herdr.run("agent", "prompt", name, build_prompt(hub, task_id, text, report))
         except herdr.HerdrError as e:
             return False, f"보내지 못했습니다: {e.message}"
-        title = text.strip().splitlines()[0] if text.strip() else ""
+        title = short_title(text)
         tasks[bot.name] = {"id": task_id, "title": note or title, "sent_at": time.time(),
                            "seq": agent.get("state_change_seq"), "report": str(report), "origin": origin}
         save_tasks(hub, tasks)
@@ -298,38 +315,11 @@ def wait(hub: Path, bots: list[str], timeout: float = 1800.0, poll: float = 2.0)
     return 2 if any(s == "blocked" for s in states.values()) else 0
 
 
-# ---- attach --------------------------------------------------------------------
-
-def attach_command(team: Team, who: str, inside: bool) -> list[str] | None:
-    """herdr arguments that take the user to an agent: focus it inside herdr, attach to it from outside."""
-    who = who or "master"
-    if who != "master" and who not in [b.name for b in team.bots]:
-        return None
-    return ["agent", "focus" if inside else "attach", agent_name(team.name, who)]
-
-
-def attach(hub: Path, who: str) -> int:
-    team = load_team(hub)
-    inside = os.environ.get("HERDR_ENV") == "1"
-    args = attach_command(team, who, inside)
-    if args is None:
-        print(f"{who}: 팀에 없는 봇입니다. 봇 목록: master, {', '.join(b.name for b in team.bots)}")
-        return 2
-    if args[-1] not in live_agents():
-        print(f"{who or 'master'}: 실행 중이 아닙니다. herdr-team up 으로 띄우세요.")
-        return 2
-    if inside:
-        herdr.run(*args)   # switches the herdr view to that agent's pane
-        return 0
-    # Outside herdr: hand this terminal over to the agent's terminal.
-    os.execvp(os.environ.get("HERDR_BIN_PATH", "herdr"), ["herdr", *args])
-
-
 # ---- restart -------------------------------------------------------------------
 
-def restart(hub: Path, names: list[str], force: bool = False, wait: float = 20.0) -> int:
+def restart(hub: Path, names: list[str], wait: float = 20.0) -> int:
     """Stop the named bots (or every bot when names is empty) and start them again with `up`,
-    so edited SOUL.md, folders and triggers take effect. A working bot is skipped unless force."""
+    so edited SOUL.md, folders and triggers take effect. A working or blocked bot is skipped."""
     if master_only(hub, "restart"):
         return 2
     team = load_team(hub)
@@ -344,8 +334,8 @@ def restart(hub: Path, names: list[str], force: bool = False, wait: float = 20.0
         agent = live.get(agent_name(team.name, name))
         if agent is None:
             continue   # not running: `up` starts it
-        if agent.get("agent_status") in ("working", "blocked") and not force:
-            print(f"{name}: 지금 {agent['agent_status']} 상태라 건너뜁니다. 끝난 뒤 다시 하거나 --force 를 붙이세요.")
+        if agent.get("agent_status") in ("working", "blocked"):
+            print(f"{name}: 지금 {agent['agent_status']} 상태라 건너뜁니다. 끝난 뒤 다시 하세요.")
             continue
         herdr.run("agent", "prompt", agent_name(team.name, name), "/exit")
         stopping.append(agent_name(team.name, name))

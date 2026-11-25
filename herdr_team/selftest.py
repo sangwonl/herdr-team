@@ -218,12 +218,21 @@ def test_board_team():
              "web": {"id": "t2", "title": "검토", "sent_at": 100.0, "seq": 5, "report": "/h/r2"}}
     cards = cards_team(team, agents, tasks, now=340.0, report_exists=lambda p: p == "/h/r2")
     m, tb, web, gone = cards
-    assert m.master and (m.title, m.status, m.text, m.target) == ("master", "working", "조율 중", "w:p1")
-    assert (tb.title, tb.sub, tb.status, tb.elapsed, tb.text) == ("tb", "TileServer +1", "working", "4m", "스키마 v2 적용")
-    assert (web.status, web.text) == ("reported", "검토")
+    assert m.master and (m.title, m.status, m.text, m.target) == ("master", "working", "", "w:p1")
+    assert (tb.title, tb.sub, tb.status, tb.elapsed, tb.text) == ("tb", "TileServer +1", "working", "4m", "t1 · 스키마 v2 적용")
+    assert (web.status, web.text) == ("reported", "t2 · 검토")
     assert (gone.status, gone.target, gone.text) == ("unknown", "", "실행 중이 아님")
     idle = cards_team(team, agents, {}, 0.0, lambda p: False)[2]
-    assert (idle.status, idle.elapsed, idle.text) == ("idle", "", "웹 제목")       # 열린 작업 없으면 세션 제목
+    assert (idle.status, idle.elapsed, idle.text) == ("idle", "", "")       # 작업도 기록도 없으면 빈칸(터미널 제목 안 씀)
+    # 작업이 끝나 tasks 에서 빠진 뒤: 터미널 제목 대신 log 의 마지막 ask, herdr 'done' 은 idle
+    stale = [dict(a, agent_status="done", terminal_title_stripped="옛 제목") for a in agents]
+    log = [{"kind": "ask", "bot": "web", "task": "t1", "text": "첫 일"}, {"kind": "reported", "bot": "web", "task": "t1"},
+           {"kind": "trigger", "bot": "web", "task": "t5", "text": "새 일"}, {"kind": "reported", "bot": "web", "task": "t5"},
+           {"kind": "mystery"}]
+    m2, _, web2, _ = cards_team(team, stale, {}, 0.0, lambda p: False, events=log)
+    assert (web2.text, web2.status) == ("t5 · 새 일", "idle")
+    assert team_mod.short_title("  a\n  b ") == "a b" and len(team_mod.short_title("x" * 300)) == 60
+    assert "옛 제목" not in m2.text and m2.text == "web ✓ master t5 보고서 제출" and m2.status == "idle"
 
     ev = [{"ts": "14:02", "kind": "ask", "bot": "tb", "task": "t1", "text": "스키마 v2 적용 요청"},
           {"ts": "14:09", "kind": "reported", "bot": "web", "task": "t2", "text": ""},
@@ -606,7 +615,7 @@ def test_reapply_template_and_restart():
         commit(hub, "p", [Draft(team.bots[0], None, "w", reapply="writer")], [])
         soul = (hub / ".herdr-team/bots/w/SOUL.md").read_text()
         assert soul_description(soul) == "쓰는 봇" and "독자" in soul
-        # restart: 일하는 중인 봇은 --force 없이는 다시 띄우지 않는다
+        # restart: 일하는 중인 봇은 다시 띄우지 않는다
         fake = hub / "fake-herdr"
         fake.write_text(f"""#!/bin/sh
 case "$1 $2" in
@@ -637,17 +646,57 @@ esac
             team_mod.up = real_up
             del os.environ["HERDR_BIN_PATH"]
 
-def test_attach_and_edit_commands():
-    team = Team("p", [Bot("api", [], ""), Bot("web", [], "")], [], Path("/h"))
-    # herdr 안에서는 그 창으로 화면을 옮기고, 밖에서는 그 에이전트의 터미널에 붙는다
-    assert team_mod.attach_command(team, "", inside=True) == ["agent", "focus", "p-master"]
-    assert team_mod.attach_command(team, "web", inside=True) == ["agent", "focus", "p-web"]
-    assert team_mod.attach_command(team, "api", inside=False) == ["agent", "attach", "p-api"]
-    assert team_mod.attach_command(team, "nobody", inside=True) is None
+def test_cli_surface():
     from .__main__ import build_parser
     parser = build_parser()
-    assert parser.parse_args(["edit"]).cmd == "edit" and parser.parse_args(["init"]).cmd == "init"
-    assert parser.parse_args(["attach"]).bot == "" and parser.parse_args(["attach", "web"]).bot == "web"
+    shown = parser.format_help()
+    for cmd in ("edit", "up", "board", "restart", "ask", "wait", "peek", "nudge", "question", "roster"):
+        assert f"    {cmd} " in shown, cmd
+    for gone in ("init", "attach", "--hub", "action", "watch", "selftest"):
+        assert gone not in shown, gone
+    assert parser.parse_args(["action", "board"]).name == "board"          # 숨겼지만 동작한다
+    assert parser.parse_args(["watch"]).cmd == "watch" and parser.parse_args(["selftest"]).cmd == "selftest"
+    for argv in (["init"], ["attach"], ["--hub", "x", "up"], ["up", "--no-focus"], ["wait", "--timeout", "1"],
+                 ["question", "a", "x", "--timeout", "1"], ["restart", "--force"]):
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                parser.parse_args(argv)
+                raise AssertionError(argv)
+            except SystemExit:
+                pass
+
+
+def test_up_reused_workspace_path():
+    # 이미 있는 워크스페이스를 다시 쓰면 --env 가 닿지 않으므로, 에이전트를 띄우기 전에 그 셸에 PATH 를 넣는다
+    with tempfile.TemporaryDirectory() as d:
+        hub = Path(d).resolve()
+        save_team(Team("p", [Bot("a", [], "")], [], hub))
+        calls = hub / "calls"
+        fake = hub / "fake-herdr"
+        fake.write_text(f"""#!/bin/sh
+echo "$*" >> "{calls}"
+case "$1 $2" in
+  "agent list") echo '{{"result":{{"agents":[]}}}}' ;;
+  "workspace list") echo '{{"result":{{"workspaces":[{{"workspace_id":"w1","label":"p"}}]}}}}' ;;
+  "tab list") echo '{{"result":{{"tabs":[{{"tab_id":"t1","label":"main"}},{{"tab_id":"t2","label":"a"}}]}}}}' ;;
+  "pane list") echo '{{"result":{{"panes":[{{"pane_id":"w1:p1","tab_id":"t1"}},{{"pane_id":"w1:p2","tab_id":"t2"}}]}}}}' ;;
+  *) echo '{{"result":{{}}}}' ;;
+esac
+""")
+        fake.chmod(0o755)
+        os.environ["HERDR_BIN_PATH"] = str(fake)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert team_mod.up(hub) == 0
+        finally:
+            del os.environ["HERDR_BIN_PATH"]
+        lines = calls.read_text().splitlines()
+        bin_dir = str(team_mod.PLUGIN_ROOT / "bin")
+        for pane, agent in (("w1:p1", "p-master"), ("w1:p2", "p-a")):
+            run = next(i for i, l in enumerate(lines) if l.startswith(f"pane run {pane} export PATH=") and bin_dir in l)
+            start = next(i for i, l in enumerate(lines) if l.startswith(f"agent start {agent} "))
+            assert run < start, (pane, lines)
+        assert not any(l.startswith(("workspace create", "tab create")) for l in lines)
 
 
 def test_python_version_check():

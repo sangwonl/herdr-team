@@ -804,7 +804,7 @@ def run_wizard(hub: Path) -> int:
             if agent_name(team.name, name) in live:
                 print(f"{agent_name(team.name, name)}: 이름을 바꿨거나 팀에서 뺀 봇이 아직 떠 있습니다. 그 창에서 /exit 하세요.")
         if saved.instructions_changed:
-            print("마스터에 팀 공통 지침을 반영하려면 마스터 창에서 /exit 한 뒤 herdr-team up 을 실행하세요.")
+            print("마스터에 팀 공통 지침을 반영하려면 마스터 창에서 /exit 한 뒤 team-up 액션(권장 키 prefix+shift+u)을 실행하세요.")
         if not saved.changed:
             return 0
         if confirm(f"바뀐 봇을 다시 띄울까요? ({', '.join(saved.changed)})"):

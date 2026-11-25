@@ -5,6 +5,10 @@ min_herdr_version = "0.9.5"
 description = "Master/sub agent teams across repos, with a status board."
 platforms = ["macos", "linux"]
 
+# Nothing to build: this only checks at install time that python3 is 3.11+ (the import exits with a clear message otherwise).
+[[build]]
+command = ["python3", "-c", "import herdr_team"]
+
 [[actions]]
 id = "team-board"
 title = "Team: open board"
@@ -26,7 +30,7 @@ title = "Team setup"
 placement = "popup"
 width = "70%"
 height = "80%"
-command = ["python3", "-m", "herdr_team", "init"]
+command = ["python3", "-m", "herdr_team", "edit"]
 
 [[panes]]
 id = "board"
