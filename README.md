@@ -1,5 +1,7 @@
 # herdr-team
 
+https://github.com/user-attachments/assets/334d8fb5-1fd5-40d7-a9f9-793bd1237e1f
+
 A [herdr](https://herdr.dev) plugin that runs a team of [Claude Code](https://claude.com/claude-code) agents across your repos. You talk to one **master** agent; it hands work to **bots**, each in its own tab, and collects their reports. A status board shows what everyone is doing. A bot can own one repo, look at several, or work with no repo at all.
 
 **Requirements:** herdr 0.9.5+ (macOS or Linux), Python 3.11+ as `python3`, Claude Code. The editor, board and CLI are in English; agent prompts and bot templates are still in Korean.
@@ -7,7 +9,7 @@ A [herdr](https://herdr.dev) plugin that runs a team of [Claude Code](https://cl
 ## Install
 
 ```sh
-herdr plugin install <owner>/herdr-team
+herdr plugin install sangwonl/herdr-team
 ```
 
 Then bind keys in `~/.config/herdr/config.toml` and run `herdr server reload-config`. Change the keys if they clash with your config.
