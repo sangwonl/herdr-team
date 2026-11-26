@@ -397,11 +397,14 @@ def confirm_in(win, ui: Ui, crumb: str, question: str) -> bool:
             t, b = chrome(win, ui, crumb, [("y", "yes"), ("n", "no"), ("Esc", "no")])
             bw = min(w - 4, 64)
             lines = wrap(question, bw - 4)
-            bh = len(lines) + 4
+            bh = len(lines) + 6   # border, gap, question, gap, answer keys, gap, border
             y, x = max(t, t + (b - t - bh) // 2), (w - bw) // 2
             box(win, y, x, bh, bw, "Confirm", True)
             for i, line in enumerate(lines):
                 safe_addstr(win, y + 2 + i, x + 2, line)
+            keys = [("y", "accent"), (" Yes   ", ""), ("n", "accent"), (" No", "")]
+            kw = min(sum(display_width(t) for t, _ in keys), bw - 4)
+            draw_row(win, ui, y + 3 + len(lines), x + bw - 2 - kw, kw, keys)   # right-aligned, like dialog buttons
         win.refresh()
         key = win.get_wch()
         if key in ("y", "Y"):
