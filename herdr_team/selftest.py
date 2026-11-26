@@ -22,7 +22,7 @@ def test_slugify():
     assert slugify("AcmeWeb_SDK") == "acmeweb_sdk"
     assert slugify("my repo.v2") == "my-repo-v2"
     assert slugify("3d-tiles") == "d-tiles"                       # project names start with a letter
-    # 봇 이름: 폴더 대소문자 유지, 숫자 시작 허용
+    # 에이전트 이름: 폴더 대소문자 유지, 숫자 시작 허용
     assert slugify("TileServer", keep_case=True) == "TileServer"
     assert slugify("my repo.v2", keep_case=True) == "my-repo-v2"
     assert slugify("3d-tiles", keep_case=True) == "3d-tiles"
@@ -154,12 +154,13 @@ def test_agent_args():
     team = Team("p", [Bot("a", ["./a", "./b"], "")], ["--permission-mode", "acceptEdits"], hub)
     m = team_mod.master_args(team)
     assert m[0] == "--append-system-prompt-file" and m[1] == "/tmp/my hub/.herdr-team/MASTER.md"
+    # 마스터에는 팀 공통 agent_args(에이전트용)가 붙지 않는다
     assert team_mod.master_args(team)[2:] == ["--allowedTools", "Bash(herdr-team *)", "Edit(//tmp/my hub/.herdr-team/context.md)"]
     assert team_mod.bot_args(team, team.bots[0]) == [
-        "--append-system-prompt-file", "/tmp/my hub/.herdr-team/bots/a/PREAMBLE.md",
+        "--append-system-prompt-file", "/tmp/my hub/.herdr-team/agents/a/PREAMBLE.md",
         "--add-dir", "/tmp/my hub/.herdr-team", "/tmp/my hub/b",
         "--allowedTools", "Bash(herdr-team question *)", "Bash(herdr-team roster)", "Bash(herdr-team peek *)",
-        "Edit(//tmp/my hub/.herdr-team/bots/a/**)",
+        "Edit(//tmp/my hub/.herdr-team/agents/a/**)",
         "Edit(//tmp/my hub/.herdr-team/reports/**)", "Edit(//tmp/my hub/.herdr-team/answers/**)",
         "--permission-mode", "acceptEdits",
     ]
@@ -182,7 +183,7 @@ def test_classify_and_wait():
     assert not wait_done({"a": "reported", "b": "working"}, set())
     assert wait_done({"a": "working", "b": "blocked"}, set())         # 새로 막힘 → 바로 알림
     assert not wait_done({"a": "working", "b": "blocked"}, {"b"})     # 이미 알린 막힘은 계속 대기
-    assert wait_done({"a": "reported", "b": "blocked"}, {"b"})        # 진행 중인 봇이 없음
+    assert wait_done({"a": "reported", "b": "blocked"}, {"b"})        # 진행 중인 에이전트가 없음
     assert wait_done({}, set())
 
 
@@ -300,11 +301,15 @@ def test_review_fixes():
     assert bot_name_error("p", "tb", ["tb"]) is not None
     assert bot_name_error("p", "", []) is not None
     assert bot_name_error("p", "tb", ["web"]) is None
-    # 대문자·숫자 시작 허용, 중복과 예약어는 대소문자 무시, 32자 제한은 소문자 project-bot 기준
+    # 대문자·숫자 시작 허용, 중복과 예약어는 대소문자 무시, 32자 제한은 소문자 project-agent 기준
     assert bot_name_error("p", "AcmeWeb", ["web"]) is None and bot_name_error("p", "3d-tiles", []) is None
     assert bot_name_error("p", "Api", ["api"]) is not None and bot_name_error("p", "Master", []) is not None
     assert bot_name_error("p", "a.b", []) is not None
     assert bot_name_error("p", "A" * 30, []) is None and bot_name_error("p", "A" * 31, []) is not None
+    assert bot_name_error("p", "A" * 31, []) == "Name too long (max 30 characters for this project)"
+    from .core import project_error
+    assert project_error("a" * 25) is None and project_error("a" * 26) == "Name too long (max 25 characters)"
+    assert project_error("Acme") is not None and project_error("") == "Name is empty"
     assert classify({"seq": 1}, {"agent_status": "unknown", "state_change_seq": 2}, True) == "reported"
 
 def test_v2_model():
@@ -329,7 +334,7 @@ def test_v2_model():
         assert (old.bots[0].dirs, old.bots[0].role) == (["./a"], "옛 역할")
         team = Team("p", [Bot("tb", ["./a", "/abs/b"], "타일 변환 담당"), Bot("scout", [], "조사 담당")], [], hub)
         home = bot_home(hub, "tb")
-        assert home == hub / ".herdr-team" / "bots" / "tb"
+        assert home == hub / ".herdr-team" / "agents" / "tb"
         ensure_home(hub, team.bots[0], "repo-owner")
         assert soul_description((home / "SOUL.md").read_text()) == "타일 변환 담당"
         assert (home / "MEMORY.md").is_file()
@@ -340,10 +345,10 @@ def test_v2_model():
         loaded = load_team(hub)
         assert [(b.name, b.dirs, b.role) for b in loaded.bots] == [("tb", ["./a", "/abs/b"], "내가 고친 목적"), ("scout", [], "조사 담당")]
         assert bot_cwd(hub, loaded.bots[0]) == hub / "a"
-        assert bot_cwd(hub, loaded.bots[1]) == bot_home(hub, "scout")       # 리포 없는 봇은 홈에서 실행
+        assert bot_cwd(hub, loaded.bots[1]) == bot_home(hub, "scout")       # 리포 없는 에이전트는 홈에서 실행
         pre = render_preamble(loaded, loaded.bots[0])
-        assert "내가 고친 목적" in pre and "`p-tb`" in pre
-        assert "scout: 조사 담당" in pre and "- tb:" not in pre             # 명단에는 다른 봇만
+        assert "내가 고친 목적" in pre and "`tb`" in pre and "p-tb" not in pre          # herdr 내부 이름은 보이지 않는다
+        assert "scout: 조사 담당" in pre and "- tb:" not in pre             # 명단에는 다른 에이전트만
         assert str(hub / ".herdr-team" / "context.md") in pre and str(home / "MEMORY.md") in pre
         assert "herdr-team question" in pre
 
@@ -403,7 +408,7 @@ def test_v2_ask_rules():
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
-                assert team_mod.ask(hub, "a", "일 맡기기") == 2          # 봇은 일을 맡길 수 없다
+                assert team_mod.ask(hub, "a", "일 맡기기") == 2          # 에이전트는 일을 맡길 수 없다
                 assert "Only the master" in out.getvalue()
                 # 트리거로 생긴 작업은 마스터의 wait 가 기다리지 않는다
                 save_tasks(hub, {"a": {"id": "t1", "title": "x", "sent_at": 0.0, "seq": 1, "report": "", "origin": "trigger"}})
@@ -440,7 +445,7 @@ def test_v2_watch_tick():
                 task = load_tasks(hub)["a"]
                 assert task["origin"] == "trigger" and task["title"] == "pr"
                 (hub / "f").write_text("c\n")
-                team_mod.watch_tick(hub, state, now=1300.0)              # 봇이 바쁨 → 건너뛰고 기준값 유지
+                team_mod.watch_tick(hub, state, now=1300.0)              # 에이전트가 바쁨 → 건너뛰고 기준값 유지
                 assert load_tasks(hub)["a"]["id"] == task["id"]
                 Path(task["report"]).write_text("done")
                 team_mod.watch_tick(hub, state, now=1310.0)              # 보고서 도착 → 거둔다
@@ -458,7 +463,7 @@ def test_v2_review_fixes():
     from .core import Trigger, next_question_id, spec_error
     with tempfile.TemporaryDirectory() as d:
         hub = Path(d).resolve()
-        # C1: 봇은 watch / up / ask / nudge 를 실행할 수 없다 (허용 목록과 별개로 명령 자체가 거절)
+        # C1: 에이전트는 watch / up / ask / nudge 를 실행할 수 없다 (허용 목록과 별개로 명령 자체가 거절)
         team = Team("p", [Bot("a", [], ""), Bot("b", [], "")], [], hub)
         save_team(team)
         assert not any("herdr-team *" in arg for arg in team_mod.bot_args(team, team.bots[0]))
@@ -471,7 +476,7 @@ def test_v2_review_fixes():
             with contextlib.redirect_stdout(out):
                 assert team_mod.nudge(hub, "a", "x") == 2              # I4: 방향 수정은 마스터만
                 assert team_mod.master_only(hub, "watch") == 2 and team_mod.master_only(hub, "up") == 2
-                # 사용자가 그 워크스페이스에 연 셸은 봇이 아니다 (탭에서 물려받은 옛 환경변수가 있어도)
+                # 사용자가 그 워크스페이스에 연 셸은 에이전트가 아니다 (탭에서 물려받은 옛 환경변수가 있어도)
                 os.environ.update(HERDR_PANE_ID="w:p9", HERDR_TEAM_BOT="b")
                 assert team_mod.master_only(hub, "watch") == 0 and team_mod.caller(hub) == "master"
                 del os.environ["HERDR_TEAM_BOT"]
@@ -484,7 +489,7 @@ def test_v2_review_fixes():
                                  "b": {"id": "t2", "title": "pr", "sent_at": 0.0, "seq": 1, "report": "", "origin": "trigger"}})
                 sent, why = team_mod.send_task(hub, team, team.bots[0], "x")
                 assert not sent and "trigger" in why and "wait" not in why
-                # I2: 트리거 작업 중 막힌 봇은 마스터에게 한 번만 알린다
+                # I2: 트리거 작업 중 막힌 에이전트는 마스터에게 한 번만 알린다
                 state = team_mod.WatchState()
                 team_mod.watch_tick(hub, state, now=0.0)
                 team_mod.watch_tick(hub, state, now=5.0)
@@ -510,11 +515,11 @@ def test_v2_review_fixes():
         first = next_question_id(hub)
         assert next_question_id(hub) != first
         # 명세 검증: 이름으로 폴더를 벗어나거나, dirs 가 목록이 아니거나, 예약된 이름이면 거절
-        for bad in ('name = "p"\n[[bots]]\nname = "../../x"\n',
-                    'name = "p"\n[[bots]]\nname = "a"\ndirs = "./ab"\n',
-                    'name = "p"\n[[bots]]\nname = "watch"\n',
-                    'name = "p"\n[[bots]]\nname = "master"\n',
-                    'name = "p"\n[[bots]]\nname = "a"\n[[bots.triggers]]\nname = "pr/x"\nevery = "1m"\nrun = "true"\nprompt = "p"\n',
+        for bad in ('name = "p"\n[[agents]]\nname = "../../x"\n',
+                    'name = "p"\n[[agents]]\nname = "a"\ndirs = "./ab"\n',
+                    'name = "p"\n[[agents]]\nname = "watch"\n',
+                    'name = "p"\n[[agents]]\nname = "master"\n',
+                    'name = "p"\n[[agents]]\nname = "a"\n[[agents.triggers]]\nname = "pr/x"\nevery = "1m"\nrun = "true"\nprompt = "p"\n',
                     'name = "P P"\n'):
             (hub / "herdr-team.toml").write_text(bad)
             assert load_team(hub) is None and spec_error(hub), bad
@@ -528,14 +533,14 @@ def test_board_fancy_pure():
     a, b = marquee(12, 0.0), marquee(12, 0.3)
     assert len(a) == len(b) == 12 and a != b and set(a) <= {"─", "━"} and "━" in a
     assert marquee(0, 1.0) == "" and marquee(2, 1.0) in ("━━", "─━", "━─")
-    # 마스터에서 봇 열로 내려가는 선: 주어진 위치에 갈림이 생긴다
+    # 마스터에서 에이전트 열로 내려가는 선: 주어진 위치에 갈림이 생긴다
     line = bus_line(20, origin=10, centers=[3, 10, 16])
     assert len(line) == 20 and line[3] == "┌" and line[16] == "┐" and line[10] == "┼" and set(line[4:10]) == {"─"}
     assert line[:3].strip() == "" and line[17:].strip() == ""
     assert bus_line(20, origin=10, centers=[10]).strip() == "│"
     assert bus_line(5, origin=2, centers=[]).strip() == ""
     assert bus_line(8, origin=30, centers=[2, 40]) == bus_line(8, origin=7, centers=[2, 7])   # 화면 밖은 가장자리로
-    # 봇마다 고정된 색 번호
+    # 에이전트마다 고정된 색 번호
     assert palette_index("api", ["api", "web", "scout"]) == 0 and palette_index("scout", ["api", "web", "scout"]) == 2
     assert palette_index("ghost", ["api"]) == palette_index("ghost", ["api"])
     cards = [Card("a", "", "working", "", "", ""), Card("b", "", "blocked", "", "", ""),
@@ -567,12 +572,12 @@ def test_hub_without_sub_repos():
         (hub / "sub").mkdir()
         (hub / "sub" / ".git").mkdir()
         assert find_repos(hub) == [hub, hub / "sub"]
-        # 저장된 "." 봇은 다시 열어도 같은 봇으로 잡힌다
+        # 저장된 "." 에이전트는 다시 열어도 같은 에이전트로 잡힌다
         team = Team("solo", [Bot("solo", ["."], "x")], [], hub)
         assert [(b.name, on) for b, on in draft_bots(hub, team)] == [("solo", True), ("sub", False)]
         from .core import bot_cwd
         assert bot_cwd(hub, team.bots[0]) == hub
-        # 봇이 없는 팀은 저장되지 않는다
+        # 에이전트가 없는 팀은 저장되지 않는다
         try:
             save_team(Team("solo", [], [], hub))
             assert False, "should refuse"
@@ -590,7 +595,7 @@ def test_team_editor_pure():
     assert soul_description(set_soul_purpose("# tb\n\n## Never\n- x\n", "넣기")) == "넣기"
     assert soul_description(set_soul_purpose("", "빈 파일")) == "빈 파일"
     assert move_first(["a", "b", "c"], 2) == ["c", "a", "b"] and move_first(["a"], 0) == ["a"]
-    # 팀 전체 검증: 봇 없음, 중복, 예약어, 잘못된 트리거
+    # 팀 전체 검증: 에이전트 없음, 중복, 예약어, 잘못된 트리거
     ok = Bot("a", [], "", [Trigger("pr", "10m", "true", "p")])
     assert team_problems("p", [ok]) == []
     assert team_problems("p", []) and team_problems("P!", [ok])
@@ -602,22 +607,22 @@ def test_team_editor_pure():
     with tempfile.TemporaryDirectory() as d:
         hub = Path(d).resolve()
         commit(hub, "p", [Draft(Bot("old", [], "처음 목적"), "researcher", None),
-                          Draft(Bot("gone", [], "지울 봇"), "blank", None)], [])
-        assert soul_description((hub / ".herdr-team/bots/old/SOUL.md").read_text()) == "처음 목적"
-        # 이름 바꾸기(홈이 따라감), 목적 고치기(SOUL 첫 문단), 새 봇 추가, 봇 삭제(홈은 남김)
+                          Draft(Bot("gone", [], "지울 에이전트"), "blank", None)], [])
+        assert soul_description((hub / ".herdr-team/agents/old/SOUL.md").read_text()) == "처음 목적"
+        # 이름 바꾸기(홈이 따라감), 목적 고치기(SOUL 첫 문단), 새 에이전트 추가, 에이전트 삭제(홈은 남김)
         team = load_team(hub)
         drafts = [Draft(b, None, b.name) for b in team.bots if b.name == "old"]
         drafts[0].bot.name, drafts[0].bot.role = "renamed", "고친 목적"
-        drafts.append(Draft(Bot("fresh", [], "새 봇"), "reviewer", None))
+        drafts.append(Draft(Bot("fresh", [], "새 에이전트"), "reviewer", None))
         commit(hub, "p", drafts, ["--x"])
         team = load_team(hub)
-        assert [(b.name, b.role) for b in team.bots] == [("renamed", "고친 목적"), ("fresh", "새 봇")]
+        assert [(b.name, b.role) for b in team.bots] == [("renamed", "고친 목적"), ("fresh", "새 에이전트")]
         assert team.agent_args == ["--x"]
-        assert not (hub / ".herdr-team/bots/old").exists()
-        assert (hub / ".herdr-team/bots/renamed/SOUL.md").read_text().startswith("# renamed\n")   # 제목도 새 이름
-        assert "## How I work" in (hub / ".herdr-team/bots/renamed/SOUL.md").read_text()
-        assert "지적한다" in (hub / ".herdr-team/bots/fresh/SOUL.md").read_text()   # reviewer 템플릿
-        assert (hub / ".herdr-team/bots/gone/SOUL.md").exists()          # 삭제한 봇의 기억은 지우지 않는다
+        assert not (hub / ".herdr-team/agents/old").exists()
+        assert (hub / ".herdr-team/agents/renamed/SOUL.md").read_text().startswith("# renamed\n")   # 제목도 새 이름
+        assert "## How I work" in (hub / ".herdr-team/agents/renamed/SOUL.md").read_text()
+        assert "지적한다" in (hub / ".herdr-team/agents/fresh/SOUL.md").read_text()   # reviewer 템플릿
+        assert (hub / ".herdr-team/agents/gone/SOUL.md").exists()          # 삭제한 에이전트의 기억은 지우지 않는다
         try:
             commit(hub, "p", [], [])
             assert False, "should refuse"
@@ -628,18 +633,18 @@ def test_reapply_template_and_restart():
     from .core import apply_template, soul_description
     from .wizard import Draft, commit
     # 템플릿을 다시 적용하면 제목과 목적은 남고 나머지 절은 템플릿 것으로 바뀐다
-    mine = "# writer-bot\n\n쉽게 전달하는 테크니컬 라이터\n\n## How I work\n- \n\n## Never\n-\n"
-    new = apply_template(mine, "writer", "writer-bot")
-    assert new.startswith("# writer-bot\n\n쉽게 전달하는 테크니컬 라이터\n\n## How I work\n")
+    mine = "# docs\n\n쉽게 전달하는 테크니컬 라이터\n\n## How I work\n- \n\n## Never\n-\n"
+    new = apply_template(mine, "writer", "docs")
+    assert new.startswith("# docs\n\n쉽게 전달하는 테크니컬 라이터\n\n## How I work\n")
     assert "독자" in new and "## Never" in new and new.count("## How I work") == 1
     with tempfile.TemporaryDirectory() as d:
         hub = Path(d).resolve()
-        commit(hub, "p", [Draft(Bot("w", [], "쓰는 봇"), "blank", None)], [])
+        commit(hub, "p", [Draft(Bot("w", [], "쓰는 에이전트"), "blank", None)], [])
         team = load_team(hub)
         commit(hub, "p", [Draft(team.bots[0], None, "w", reapply="writer")], [])
-        soul = (hub / ".herdr-team/bots/w/SOUL.md").read_text()
-        assert soul_description(soul) == "쓰는 봇" and "독자" in soul
-        # restart: 일하는 중인 봇은 다시 띄우지 않는다
+        soul = (hub / ".herdr-team/agents/w/SOUL.md").read_text()
+        assert soul_description(soul) == "쓰는 에이전트" and "독자" in soul
+        # restart: 일하는 중인 에이전트는 다시 띄우지 않는다
         fake = hub / "fake-herdr"
         fake.write_text(f"""#!/bin/sh
 case "$1 $2" in
@@ -660,8 +665,8 @@ esac
             with contextlib.redirect_stdout(out):
                 assert team_mod.restart(hub, ["w"]) == 2 and ups == [] and not (hub / "exited").exists()
                 assert team_mod.restart(hub, ["nobody"]) == 2
-                # 떠 있는 봇은 일하는 중이라 건너뛰어도, 아직 안 뜬 새 봇은 up 으로 띄운다
-                commit(hub, "p", [Draft(load_team(hub).bots[0], None, "w"), Draft(Bot("n", [], "새 봇"), "blank", None)], [])
+                # 떠 있는 에이전트는 일하는 중이라 건너뛰어도, 아직 안 뜬 새 에이전트는 up 으로 띄운다
+                commit(hub, "p", [Draft(load_team(hub).bots[0], None, "w"), Draft(Bot("n", [], "새 에이전트"), "blank", None)], [])
                 assert team_mod.restart(hub, ["w", "n"]) == 2 and ups == [hub] and not (hub / "exited").exists()
                 (hub / "st").write_text("idle")
                 assert team_mod.restart(hub, ["w"], wait=3) == 0
@@ -722,8 +727,8 @@ esac
             assert run < start, (pane, lines)
         assert not any(l.startswith(("workspace create", "tab create")) for l in lines)
 
-        # 마스터 창에서 up 을 친 경우(그 창의 앞 프로세스가 up 자신)와, 봇 창에서 다른 프로그램이 도는 경우:
-        # 그 창에 export 를 쳐 넣지 않는다. 마스터는 up 이 끝난 뒤 띄우도록 미루고, 봇은 건너뛴다.
+        # 마스터 창에서 up 을 친 경우(그 창의 앞 프로세스가 up 자신)와, 에이전트 창에서 다른 프로그램이 도는 경우:
+        # 그 창에 export 를 쳐 넣지 않는다. 마스터는 up 이 끝난 뒤 띄우도록 미루고, 에이전트는 건너뛴다.
         fake.write_text(fake.read_text().replace('  *) echo', """  "pane process-info") echo '{"result":{"process_info":{"foreground_process_group_id":9,"shell_pid":1,"foreground_processes":[{"argv0":"vim"}]}}}' ;;
   *) echo"""))
         calls.unlink()
@@ -755,7 +760,7 @@ def test_bot_name_case():
         team = load_team(hub)
         assert [b.name for b in team.bots] == ["api", "web"]
         assert canon_bot(team, "API") == "api" and canon_bot(team, "nobody") == "nobody" and canon_bot(team, "master") == "master"
-        # 대소문자 유지 이름은 저장·로드되고, 대소문자만 다른 두 봇은 거부된다
+        # 대소문자 유지 이름은 저장·로드되고, 대소문자만 다른 두 에이전트는 거부된다
         save_team(Team("p", [Bot("AcmeWeb", [], ""), Bot("3d-tiles", [], "")], [], hub))
         assert [b.name for b in load_team(hub).bots] == ["AcmeWeb", "3d-tiles"]
         (hub / "herdr-team.toml").write_text('name = "p"\n[[bots]]\nname = "Api"\n[[bots]]\nname = "api"\n')
@@ -765,16 +770,16 @@ def test_bot_name_case():
         # 대소문자만 바꾸는 이름 변경(api -> Api): 홈 폴더가 그 이름으로 옮겨지고 내용이 남는다
         save_team(Team("p", [Bot("api", [], "")], [], hub))
         commit(hub, "p", [Draft(Bot("api", [], ""), "blank", None)], [])
-        (hub / ".herdr-team" / "bots" / "api" / "MEMORY.md").write_text("keep")
+        (hub / ".herdr-team" / "agents" / "api" / "MEMORY.md").write_text("keep")
         commit(hub, "p", [Draft(Bot("Api", [], ""), None, "api")], [])
-        homes = os.listdir(hub / ".herdr-team" / "bots")
+        homes = os.listdir(hub / ".herdr-team" / "agents")
         assert "Api" in homes and "api" not in homes, homes   # listdir shows the real case
-        assert (hub / ".herdr-team" / "bots" / "Api" / "MEMORY.md").read_text() == "keep"
-        assert (hub / ".herdr-team" / "bots" / "Api" / "SOUL.md").read_text().startswith("# Api\n")
+        assert (hub / ".herdr-team" / "agents" / "Api" / "MEMORY.md").read_text() == "keep"
+        assert (hub / ".herdr-team" / "agents" / "Api" / "SOUL.md").read_text().startswith("# Api\n")
 
 
 def test_new_bot_edited_soul():
-    # 저장 전 새 봇에서 e 로 고친 SOUL.md 는 commit 때 템플릿 대신 그대로 쓰인다
+    # 저장 전 새 에이전트에서 e 로 고친 SOUL.md 는 commit 때 템플릿 대신 그대로 쓰인다
     from .core import render_soul, soul_description
     from .wizard import Draft, commit, soul_text
     with tempfile.TemporaryDirectory() as d:
@@ -783,14 +788,14 @@ def test_new_bot_edited_soul():
         draft = Draft(Bot("api", [], "REST API"), "developer", None, soul=mine)
         assert soul_text(hub, draft) == mine                          # 미리보기도 고친 글
         commit(hub, "p", [draft, Draft(Bot("web", [], "웹"), "frontend", None)], [])
-        soul = (hub / ".herdr-team" / "bots" / "api" / "SOUL.md").read_text()
+        soul = (hub / ".herdr-team" / "agents" / "api" / "SOUL.md").read_text()
         assert soul == mine and soul_description(soul) == "REST API"
-        assert (hub / ".herdr-team" / "bots" / "api" / "MEMORY.md").exists()
-        assert "마이그레이션" not in (hub / ".herdr-team" / "bots" / "web" / "SOUL.md").read_text()
+        assert (hub / ".herdr-team" / "agents" / "api" / "MEMORY.md").exists()
+        assert "마이그레이션" not in (hub / ".herdr-team" / "agents" / "web" / "SOUL.md").read_text()
         # 고친 뒤 목적만 바꾸면 목적 줄만 따라 바뀌고, 사용자가 쓴 줄은 남는다
         draft = Draft(Bot("db", [], "새 목적"), "developer", None, soul=mine.replace("# api", "# db"))
         commit(hub, "p", [draft], [])
-        soul = (hub / ".herdr-team" / "bots" / "db" / "SOUL.md").read_text()
+        soul = (hub / ".herdr-team" / "agents" / "db" / "SOUL.md").read_text()
         assert soul_description(soul) == "새 목적" and "마이그레이션" in soul
 
 
@@ -872,7 +877,7 @@ esac
             with contextlib.redirect_stdout(out):
                 assert team_mod.question(ha, "bb/WEB", "포트?", timeout=3, poll=0.05) == 0
                 assert team_mod.roster(ha) == 0
-            # 질문 기록과 답은 답하는 팀(bb)의 허브에 있다: 그 봇은 자기 허브 answers/ 만 쓸 수 있다
+            # 질문 기록과 답은 답하는 팀(bb)의 허브에 있다: 그 에이전트는 자기 허브 answers/ 만 쓸 수 있다
             answer = hb / ".herdr-team" / "answers" / "q1-web.md"
             assert answer.read_text().strip() == "포트는 18080" and "포트는 18080" in out.getvalue()
             q = json.loads((hb / ".herdr-team" / "questions.json").read_text())
@@ -892,7 +897,7 @@ esac
             # 프롬프트와 권한: 상대 context.md 경로와 읽기 규칙
             a = load_team(ha)
             pre = render_preamble(a, a.bots[0])
-            assert "## 연결된 팀" in pre and str(hb / ".herdr-team" / "context.md") in pre and "소유 팀의 봇만" in pre
+            assert "## 연결된 팀" in pre and str(hb / ".herdr-team" / "context.md") in pre and "소유 팀의 에이전트만" in pre
             assert f"Read(/{hb / '.herdr-team' / 'context.md'})" in team_mod.bot_args(a, a.bots[0])
             assert "연결된 팀" in team_mod.master_prompt(ha)
             # 잘못된 설정은 거부한다
@@ -908,7 +913,7 @@ def test_remove_bot_home():
     with tempfile.TemporaryDirectory() as d:
         hub = Path(d).resolve()
         save_team(Team("p", [Bot("api", [], "API"), Bot("web", [], "웹")], [], hub))
-        bots = hub / ".herdr-team" / "bots"
+        bots = hub / ".herdr-team" / "agents"
         (bots / "api" / "MEMORY.md").write_text("기억")
         team = load_team(hub)
         keep = [Draft(team.bots[1], None, "web")]
@@ -919,7 +924,7 @@ def test_remove_bot_home():
         # 홈을 지우지 않고 빼면 홈은 남는다
         commit(hub, "p", keep, [])
         assert (bots / "api" / "MEMORY.md").exists()
-        # 저장하면(purge) 지워지고, 같은 이름의 새 봇은 새 홈에서 시작한다
+        # 저장하면(purge) 지워지고, 같은 이름의 새 에이전트는 새 홈에서 시작한다
         commit(hub, "p", keep + [Draft(Bot("api", [], ""), "blank", None)], [], {"api"})
         assert not (bots / "api" / "MEMORY.md").read_text().startswith("기억")
         commit(hub, "p", keep, [], {"api"})
@@ -933,6 +938,76 @@ def test_remove_bot_home():
             except ValueError:
                 pass
         assert (hub / "outside").exists() and (bots / "web").exists()
+
+
+def test_master_settings():
+    from .core import dump_team, ensure_instructions, user_instructions
+    from .wizard import Draft, change_summary, commit, master_preview
+    with tempfile.TemporaryDirectory() as d:
+        hub = Path(d).resolve()
+        save_team(Team("p", [Bot("a", [], "A")], ["--permission-mode", "acceptEdits"], hub))
+        # master.md: 처음엔 주석뿐이라 MASTER.md 에 들어가지 않는다
+        path = ensure_instructions(hub, "master.md")
+        assert path == hub / ".herdr-team" / "master.md" and user_instructions(hub, "master.md") == ""
+        assert "마스터 전용" not in team_mod.master_prompt(hub)
+        path.write_text(path.read_text() + "- 일을 나눌 때 리뷰 에이전트를 꼭 거친다.\n")
+        prompt = team_mod.master_prompt(hub)
+        assert prompt.rstrip().endswith("</user-instructions>") and "## 사용자 지침 (마스터 전용, 기본 지침보다 우선)" in prompt
+        # 기본 지시문: 사용자 지침이 우선한다는 줄이 머리말에 있고, 특정 사용자 취향(커밋 메시지 규칙)은 없다
+        head = prompt.split("\n## ", 1)[0]
+        assert "아래 '사용자 지침' 절이 이 기본 지침과 다르면 사용자 지침을 따른다." in head
+        assert "공동 작성자" not in prompt and "되돌리기 어려운 일은 사용자가 요청했을 때만" in prompt
+        assert "Lines here override the master's built-in instructions." in path.read_text()
+        assert "리뷰 에이전트를 꼭 거친다" in prompt and ensure_instructions(hub, "master.md").read_text().count("리뷰 에이전트") == 1
+        assert any("리뷰 에이전트" in "".join(t for t, _ in r) for r in master_preview(hub, "p"))
+        # 저장 전 요약에 마스터 지침 변경이 보인다
+        team = load_team(hub)
+        rows = change_summary(team, "p", [Draft(team.bots[0], None, "a")], set(), False, master_changed=True)
+        assert any("master instructions changed" in "".join(t for t, _ in r) for r in rows)
+        # 예전 [master] agent_args 가 남아 있어도 오류 없이 무시하고, setup 저장 때 빠진다
+        (hub / "herdr-team.toml").write_text(dump_team(team) + '\n[master]\nagent_args = ["--model", "opus"]\n')
+        team = load_team(hub)
+        assert team is not None and "--model" not in team_mod.master_args(team)
+        commit(hub, "p", [Draft(team.bots[0], None, "a")], team.agent_args)
+        assert "[master]" not in (hub / "herdr-team.toml").read_text()
+
+
+def test_agents_rename_compat():
+    from .core import dump_team, migrate_homes
+    with tempfile.TemporaryDirectory() as d:
+        hub = Path(d).resolve()
+        # 옛 허브: [[bots]] 와 .herdr-team/bots/<이름>/ — 그대로 읽히고, 홈은 agents/ 로 옮겨진다
+        old = hub / ".herdr-team" / "bots" / "reviewer-bot"
+        old.mkdir(parents=True)
+        (old / "SOUL.md").write_text("# reviewer-bot\n\n옛 목적\n")
+        (old / "MEMORY.md").write_text("기억")
+        (hub / "herdr-team.toml").write_text('name = "p"\n[[bots]]\nname = "reviewer-bot"\n'
+                                             '[[bots.triggers]]\nname = "pr"\nevery = "5m"\nrun = "true"\nprompt = "p"\n')
+        team = load_team(hub)
+        assert [(b.name, b.role, b.triggers[0].name) for b in team.bots] == [("reviewer-bot", "옛 목적", "pr")]  # -bot 이름도 그대로
+        assert not (hub / ".herdr-team" / "bots").exists()
+        assert (hub / ".herdr-team" / "agents" / "reviewer-bot" / "MEMORY.md").read_text() == "기억"
+        assert migrate_homes(hub) is False                                  # 한 번만
+        from .core import soul_description
+        assert soul_description("# a\n\n(이 봇이 무엇을 위한 것인지 한 문장으로 적으세요)\n") == ""   # 옛 자리표시도 빈 목적
+        # 권한 규칙과 PREAMBLE 은 새 경로를 쓴다
+        args = team_mod.bot_args(team, team.bots[0])
+        assert any("/.herdr-team/agents/reviewer-bot/" in a for a in args) and not any("/bots/" in a for a in args)
+        # 저장하면 새 키로 쓴다
+        save_team(team)
+        text = (hub / "herdr-team.toml").read_text()
+        assert "[[agents]]" in text and "[[agents.triggers]]" in text and "[[bots" not in text
+        assert load_team(hub) == team
+        # 둘 다 있으면 오류
+        (hub / "herdr-team.toml").write_text(text + '\n[[bots]]\nname = "x"\n')
+        assert load_team(hub) is None
+        # state_dir 이 먼저 빈 agents/ 를 만들었어도 옛 bots/ 는 옮겨진다
+        (hub / ".herdr-team" / "agents").rename(hub / ".herdr-team" / "bots")
+        (hub / ".herdr-team" / "agents").mkdir()
+        assert migrate_homes(hub) is True and (hub / ".herdr-team" / "agents" / "reviewer-bot" / "SOUL.md").exists()
+        # agents/ 에 이미 내용이 있으면 옮기지 않는다(덮어쓰지 않음)
+        (hub / ".herdr-team" / "bots" / "x").mkdir(parents=True)
+        assert migrate_homes(hub) is False and (hub / ".herdr-team" / "bots" / "x").exists()
 
 
 def test_python_version_check():
@@ -970,20 +1045,20 @@ def test_setup_upgrade():
         commit(hub, "p", [Draft(Bot("a", [], "목적"), "developer", None)], [])
         assert (hub / ".herdr-team/instructions.md").exists() and user_instructions(hub) == ""
         team = load_team(hub)
-        assert "사용자 지침" not in render_preamble(team, team.bots[0]) and "사용자 지침" not in team_mod.master_prompt(hub)
+        assert "## 사용자 지침" not in render_preamble(team, team.bots[0]) and "## 사용자 지침" not in team_mod.master_prompt(hub)
         ensure_instructions(hub).write_text("<!-- 주석 -->\n- 보고 전에 테스트를 돌린다.\n")
         assert user_instructions(hub) == "- 보고 전에 테스트를 돌린다."
         ensure_instructions(hub).write_text("- 진짜 지침\n<!--\n- 예시 (닫는 표시를 지움)\n")
         assert user_instructions(hub) == "- 진짜 지침"                    # 닫히지 않은 주석은 끝까지 주석
         ensure_instructions(hub).write_text("<!-- 주석 -->\n- 보고 전에 테스트를 돌린다.\n")
         pre = render_preamble(team, team.bots[0])
-        assert "사용자 지침 (팀 공통)" in pre and "- 보고 전에 테스트를 돌린다." in pre and "주석" not in pre
+        assert "## 사용자 지침 (팀 공통, 기본 지침보다 우선)" in pre and "- 보고 전에 테스트를 돌린다." in pre and "주석" not in pre
         mp = team_mod.master_prompt(hub)
         assert mp.startswith("# 너는 이 프로젝트의 마스터다") and "- 보고 전에 테스트를 돌린다." in mp
-        # 미리보기와 저장 전 요약, 다시 띄울 봇
+        # 미리보기와 저장 전 요약, 다시 띄울 에이전트
         rows = bot_preview(hub, Draft(team.bots[0], None, "a"))
         text = "\n".join("".join(t for t, _ in r) for r in rows)
-        assert "SOUL.md" in text and "## Extra" in text and "bot's home" in text
+        assert "SOUL.md" in text and "## Extra" in text and "agent's home" in text
         fresh = Draft(Bot("b", ["./b"], ""), None, None)
         assert "developer" in "".join(t for r in bot_preview(hub, fresh) for t, _ in r)   # 폴더가 있으면 developer
         same = Draft(copy_bot(team.bots[0]), None, "a")
@@ -1013,7 +1088,7 @@ def copy_bot(b):
 
 def test_board_connectors():
     from .board import bus_line, card_width, connector_layout, grid_columns
-    names = ["api", "core-engineer", "리포-없는-긴-이름", "reviewer-bot", "w"]
+    names = ["api", "core-engineer", "리포-없는-긴-이름", "reviewer", "w"]
     for w in (30, 45, 60, 80, 100, 120, 150, 200):
         for n in range(1, 6):
             for rot in range(len(names)):

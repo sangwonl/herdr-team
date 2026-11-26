@@ -45,7 +45,22 @@ def bot_name_error(project: str, name: str, others: list[str]) -> str | None:
         return f"Name already in use (case is ignored): {name}"
     if not BOT_RE.match(name):
         return "Use only letters, digits, - and _; start with a letter or digit"
+    # herdr's own agent name is "<project>-<name>" (max 32); say it as a limit on the user's name.
+    limit = 32 - len(project) - 1
+    if len(name) > limit:
+        return f"Name too long (max {limit} characters for this project)"
     return name_error(agent_name(project, name))
+
+
+def project_error(project: str) -> str | None:
+    """The project name in words for the user. It is also the start of herdr's agent names, hence the length."""
+    if not project:
+        return "Name is empty"
+    if not NAME_RE.match(project):
+        return "Start with a lowercase letter; use only a-z, 0-9, - and _"
+    if len(project) > 32 - len("-master"):
+        return f"Name too long (max {32 - len('-master')} characters)"
+    return None
 
 
 def name_error(name: str) -> str | None:
@@ -101,9 +116,9 @@ def dump_team(team: Team) -> str:
     out = [f"name = {_q(team.name)}",
            "agent_args = [" + ", ".join(_q(a) for a in team.agent_args) + "]"]
     for b in team.bots:
-        out += ["", "[[bots]]", f"name = {_q(b.name)}", "dirs = [" + ", ".join(_q(d) for d in b.dirs) + "]"]
+        out += ["", "[[agents]]", f"name = {_q(b.name)}", "dirs = [" + ", ".join(_q(d) for d in b.dirs) + "]"]
         for t in b.triggers:
-            out += ["", "[[bots.triggers]]", f"name = {_q(t.name)}", f"every = {_q(t.every)}",
+            out += ["", "[[agents.triggers]]", f"name = {_q(t.name)}", f"every = {_q(t.every)}",
                     f"run = {_q(t.run)}", f"prompt = {_q(t.prompt)}"]
     for c in team.collaborators:
         out += ["", "[[collaborators]]", f"name = {_q(c.name)}", f"hub = {_q(str(c.hub))}"]
@@ -117,9 +132,9 @@ def _write_atomic(path: Path, text: str) -> None:
 
 
 def save_team(team: Team) -> None:
-    """Write the spec and make sure every bot has a home (its purpose lives in SOUL.md)."""
+    """Write the spec and make sure every agent has a home (its purpose lives in SOUL.md)."""
     if not team.bots:
-        raise ValueError("no bots")
+        raise ValueError("no agents")
     for bot in team.bots:
         ensure_home(team.hub, bot)
     _write_atomic(team.hub / SPEC_FILE, dump_team(team))
@@ -130,6 +145,7 @@ RESERVED = ("master", "watch")   # the master agent and the watch tab use these
 
 def _parse_team(hub: Path) -> Team:
     """Read and validate the spec. Raises ValueError with a message for the user."""
+    migrate_homes(hub)   # homes are read below (SOUL.md purposes); move them before
     try:
         data = tomllib.loads((hub / SPEC_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
@@ -141,18 +157,20 @@ def _parse_team(hub: Path) -> Team:
         return value
 
     project = data.get("name")
-    if not isinstance(project, str) or name_error(project) or name_error(agent_name(project, "master")):
+    if not isinstance(project, str) or project_error(project):
         raise ValueError(f"invalid project name: {project!r}")
     bots, seen = [], set()
-    raw_bots = data.get("bots", [])
+    if "agents" in data and "bots" in data:
+        raise ValueError("use [[agents]] only (this file also has the old [[bots]])")
+    raw_bots = data.get("agents", data.get("bots", []))   # [[bots]] is the name before 2026-11-26
     if not isinstance(raw_bots, list) or not all(isinstance(b, dict) for b in raw_bots):
-        raise ValueError("invalid bots entry")
+        raise ValueError("invalid agents entry")
     for b in raw_bots:
         name = b.get("name")
         # The name becomes a folder and a herdr agent name, so it must be a plain slug.
         if not isinstance(name, str) or name.lower() in RESERVED or name.lower() in seen \
                 or name_error(agent_name(project, name)) or not BOT_RE.match(name):
-            raise ValueError(f"invalid bot name: {name!r}")
+            raise ValueError(f"invalid agent name: {name!r}")
         seen.add(name.lower())
         if "dirs" in b:
             dirs = strings(b["dirs"], f"dirs of {name}")
@@ -210,11 +228,11 @@ def collaborators_block(team: Team) -> list[str]:
     lines = ["## 연결된 팀", ""]
     for name, other in linked.items():
         bots = ", ".join(b.name for b in other.bots)
-        lines.append(f"- {name}: 허브 {other.hub}, 봇 {bots}. 팀 맥락 {other.hub / '.herdr-team' / 'context.md'} — 일을 시작하기 전에 읽는다.")
+        lines.append(f"- {name}: 허브 {other.hub}, 에이전트 {bots}. 팀 맥락 {other.hub / '.herdr-team' / 'context.md'} — 일을 시작하기 전에 읽는다.")
     lines += [
-        '- 상대 팀에 묻기: `herdr-team question <팀>/<봇|master> "<질문>"`. 명단과 상태: `herdr-team roster`.',
+        '- 상대 팀에 묻기: `herdr-team question <팀>/<에이전트|master> "<질문>"`. 명단과 상태: `herdr-team roster`.',
         "- 일을 맡기는 것(ask)은 자기 팀 안에서만 한다. 상대 팀에 필요한 일은 그 팀 master 에게 묻거나, 보고서에 \"다른 팀에 필요한 작업\"으로 적는다.",
-        "- 공통 리포는 한 팀이 소유한다. 고치는 것은 소유 팀의 봇만 하고, 다른 팀은 읽기만 한다.",
+        "- 공통 리포는 한 팀이 소유한다. 고치는 것은 소유 팀의 에이전트만 하고, 다른 팀은 읽기만 한다.",
         "",
     ]
     return lines
@@ -257,29 +275,32 @@ GITIGNORE = "tasks.json\nquestions.json\nqseq\nlog.jsonl\nlock\n*.tmp\nreports/\
 
 def state_dir(hub: Path) -> Path:
     sd = hub / ".herdr-team"
-    for sub in ("reports", "answers", "triggers", "bots"):
+    migrate_homes(hub)
+    for sub in ("reports", "answers", "triggers", "agents"):
         (sd / sub).mkdir(parents=True, exist_ok=True)
     gi = sd / ".gitignore"
     if _read(gi).strip() in ("", "*"):  # "*" is what v1 wrote; SOUL.md should be trackable
         gi.write_text(GITIGNORE)
     context = sd / "context.md"
     if not context.exists():
-        context.write_text("# 프로젝트 맥락\n\n마스터가 유지한다. 모든 봇이 일을 시작하기 전에 읽는다.\n\n"
+        context.write_text("# 프로젝트 맥락\n\n마스터가 유지한다. 모든 에이전트가 일을 시작하기 전에 읽는다.\n\n"
                            "## 목표\n\n## 리포 간 약속\n\n## 결정 사항\n", encoding="utf-8")
     ensure_instructions(hub)
     return sd
 
 
-def ensure_instructions(hub: Path) -> Path:
-    path = hub / ".herdr-team" / "instructions.md"
+def ensure_instructions(hub: Path, name: str = "instructions.md") -> Path:
+    """The user's instructions file (instructions.md, or master.md for the master only), created with a
+    comment-only starter so opening it shows what it is for. herdr-team never overwrites it."""
+    path = hub / ".herdr-team" / name
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(INSTRUCTIONS_STARTER, encoding="utf-8")
+        path.write_text(MASTER_STARTER if name == "master.md" else INSTRUCTIONS_STARTER, encoding="utf-8")
     return path
 
 
 INSTRUCTIONS_STARTER = """<!--
-Team-wide instructions. Whatever you write here goes to every bot and the master
+Team-wide instructions. Whatever you write here goes to the master and all its agents
 as user instructions (after they restart). For example:
 - Always run the tests before reporting, and include the result.
 - Write commit messages in English.
@@ -288,17 +309,37 @@ While this file holds only this comment, nothing is sent.
 """
 
 
-def user_instructions(hub: Path) -> str:
+MASTER_STARTER = """<!--
+Instructions for the master only (after it restarts).
+Lines here override the master's built-in instructions. For example:
+- Summarize agent reports as a table.
+- Show me the diff before any commit.
+- Ask me before giving an agent work outside its own repo.
+While this file holds only this comment, nothing is sent.
+-->
+"""
+
+
+def user_instructions(hub: Path, name: str = "instructions.md") -> str:
     """The team-wide user instructions with HTML comments removed; "" when there is nothing else.
     An unclosed <!-- runs to the end of the file, as in HTML, so the starter's examples never leak out."""
-    return re.sub(r"<!--.*?(?:-->|\Z)", "", _read(hub / ".herdr-team" / "instructions.md"), flags=re.S).strip()
+    return re.sub(r"<!--.*?(?:-->|\Z)", "", _read(hub / ".herdr-team" / name), flags=re.S).strip()
+
+
+def master_instructions_block(hub: Path) -> list[str]:
+    text = user_instructions(hub, "master.md")
+    if not text:
+        return []
+    return ["## 사용자 지침 (마스터 전용, 기본 지침보다 우선)", "",
+            f"사용자가 마스터에게만 정한 지침이다 ({hub / '.herdr-team' / 'master.md'}). 다른 규칙보다 우선해 따른다.",
+            "", "<user-instructions>", text, "</user-instructions>", ""]
 
 
 def instructions_block(hub: Path) -> list[str]:
     text = user_instructions(hub)
     if not text:
         return []
-    return ["## 사용자 지침 (팀 공통)", "",
+    return ["## 사용자 지침 (팀 공통, 기본 지침보다 우선)", "",
             f"사용자가 팀 전체에 정한 지침이다 ({hub / '.herdr-team' / 'instructions.md'}). 다른 규칙보다 우선해 따른다.",
             "", "<user-instructions>", text, "</user-instructions>", ""]
 
@@ -331,7 +372,7 @@ def _templates() -> dict[str, str]:
 TEMPLATES = _templates()   # built-in only; templates(hub) adds the hub's own
 PURPOSE_RE = re.compile(r"\{purpose(?::\s*([^}]*))?\}")   # {purpose} or {purpose: default sentence}
 TEMPLATE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
-TEMPLATE_SKELETON = ("# {name}\n\n{purpose: 이 봇이 하는 일을 한 문장으로.}\n\n## How I work\n- \n\n## Never\n- \n")
+TEMPLATE_SKELETON = ("# {name}\n\n{purpose: 이 에이전트가 하는 일을 한 문장으로.}\n\n## How I work\n- \n\n## Never\n- \n")
 
 
 def user_template_dir(hub: Path) -> Path:
@@ -368,12 +409,29 @@ def template_purpose(template: str, hub: Path | None = None) -> str:
     return (m.group(1) or "").strip() if m else ""
 # '## Extra' to the end of the file belongs to the user (templates put it last), sub-headings and all.
 EXTRA_RE = re.compile(r"^## Extra[ \t]*(?:\n[\s\S]*)?\Z", re.M)
-EXTRA_BLOCK = "## Extra\n<!-- 이 봇에게만 줄 지침을 여기에 적는다. 템플릿을 다시 적용해도 이 절은 그대로 남는다. -->\n"
-SOUL_PLACEHOLDER = "(이 봇이 무엇을 위한 것인지 한 문장으로 적으세요)"
+EXTRA_BLOCK = "## Extra\n<!-- 이 에이전트에게만 줄 지침을 여기에 적는다. 템플릿을 다시 적용해도 이 절은 그대로 남는다. -->\n"
+SOUL_PLACEHOLDER = "(이 에이전트가 무엇을 위한 것인지 한 문장으로 적으세요)"
+# Placeholders written by earlier versions; still mean "no purpose yet" in existing SOUL.md files.
+OLD_PLACEHOLDERS = ("(이 봇이 무엇을 위한 것인지 한 문장으로 적으세요)",)
 
 
 def bot_home(hub: Path, name: str) -> Path:
-    return hub / ".herdr-team" / "bots" / name
+    return hub / ".herdr-team" / "agents" / name
+
+
+def migrate_homes(hub: Path) -> bool:
+    """Rename .herdr-team/bots (the old name) to .herdr-team/agents once. True when it moved.
+    An empty agents/ (made before the move) does not block it."""
+    sd = hub / ".herdr-team"
+    old, new = sd / "bots", sd / "agents"
+    if not old.is_dir() or old.is_symlink():
+        return False
+    if new.is_dir() and not any(new.iterdir()):
+        new.rmdir()
+    if new.exists():
+        return False
+    old.rename(new)
+    return True
 
 
 def render_soul(template: str, name: str, purpose: str, hub: Path | None = None) -> str:
@@ -394,7 +452,7 @@ def soul_description(soul: str) -> str:
     for para in re.split(r"\n\s*\n", soul.replace("\r\n", "\n").strip()):
         para = re.sub(r"\s*\n\s*", " ", para).strip()
         if para and not para.startswith("#"):
-            return "" if para == SOUL_PLACEHOLDER else para
+            return "" if para == SOUL_PLACEHOLDER or para in OLD_PLACEHOLDERS else para
     return ""
 
 
@@ -424,10 +482,10 @@ def apply_template(soul: str, template: str, name: str, hub: Path | None = None)
 def team_problems(project: str, bots: list[Bot]) -> list[str]:
     """Everything that would stop the team from being saved, in words for the user."""
     problems = []
-    if not project or name_error(project) or name_error(agent_name(project, "master")):
+    if not project or project_error(project):
         problems.append(f"Invalid project name: {project!r}")
     if not bots:
-        problems.append("The team has no bots")
+        problems.append("The team has no agents")
     names = [b.name for b in bots]
     for i, bot in enumerate(bots):
         err = bot_name_error(project, bot.name, names[:i] + names[i + 1:])
@@ -440,7 +498,7 @@ def team_problems(project: str, bots: list[Bot]) -> list[str]:
             if parse_every(t.every) is None:
                 problems.append(f"{bot.name}/{t.name}: interval must look like 30s, 10m, 2h or 1d: {t.every!r}")
             if not t.run.strip() or not t.prompt.strip():
-                problems.append(f"{bot.name}/{t.name}: needs both a command and a prompt for the bot")
+                problems.append(f"{bot.name}/{t.name}: needs both a command and a prompt for the agent")
     return problems
 
 
@@ -483,7 +541,7 @@ def render_preamble(team: Team, bot: Bot) -> str:
     soul = _read(home / "SOUL.md").strip() or render_soul("blank", bot.name, bot.role).strip()
     extra = [str(resolve_repo(hub, d)) for d in bot.dirs[1:]]
     return "\n".join([
-        f"# 너는 {team.name} 팀의 봇 `{agent_name(team.name, bot.name)}` 이다",
+        f"# 너는 {team.name} 팀의 에이전트 `{bot.name}` 이다",
         "",
         "아래는 네가 누구이고 어떻게 일하는지 적은 SOUL.md 다. 사용자가 고쳐 달라고 할 때만 바꾼다.",
         "",
@@ -501,14 +559,14 @@ def render_preamble(team: Team, bot: Bot) -> str:
         *([f"- 추가 폴더: {', '.join(extra)}"] if extra else []),
         f"- 홈: {home} (SOUL.md, MEMORY.md)",
         f"- 팀 공유 맥락: {sd / 'context.md'} — 프로젝트 목표, 리포 간 약속, 결정 사항. 일을 시작하기 전에 읽는다.",
-        f"- 모든 봇의 보고서: {sd / 'reports'} — 다른 봇이 무엇을 했는지 궁금하면 읽는다.",
+        f"- 모든 에이전트의 보고서: {sd / 'reports'} — 다른 에이전트가 무엇을 했는지 궁금하면 읽는다.",
         "",
         "## 일하는 방식",
         "- 일은 마스터가 `[herdr-team 작업 tN]` 으로 준다. 끝나면 거기 지정된 보고서 파일에 결과를 쓴다.",
-        "- `[herdr-team 질문 qN]` 은 마스터나 다른 봇의 질문이다. 지정된 파일에 답을 쓰고 하던 일을 이어간다.",
+        "- `[herdr-team 질문 qN]` 은 마스터나 다른 에이전트의 질문이다. 지정된 파일에 답을 쓰고 하던 일을 이어간다.",
         "- `[herdr-team 전달]` 은 마스터가 진행 중에 보내는 방향 수정이다. 반영해서 계속한다.",
-        '- 다른 봇의 영역에 대해 알아야 하면 추측하지 말고 묻는다: `herdr-team question <봇> "<질문>"` (답이 출력된다).',
-        '- 다른 봇의 영역에서 작업이 필요하면 직접 시키지 않는다. 보고서에 "다른 봇에 필요한 작업"으로 적으면 마스터가 배정한다.',
+        '- 다른 에이전트의 영역에 대해 알아야 하면 추측하지 말고 묻는다: `herdr-team question <에이전트> "<질문>"` (답이 출력된다).',
+        '- 다른 에이전트의 영역에서 작업이 필요하면 직접 시키지 않는다. 보고서에 "다른 에이전트에 필요한 작업"으로 적으면 마스터가 배정한다.',
         "- 위에 적힌 곳 밖에는 아무것도 쓰지 않는다.",
         "",
         "## 기억",
@@ -671,7 +729,7 @@ def build_prompt(hub: Path, task_id: str, text: str, report: Path) -> str:
     return (f"[herdr-team 작업 {task_id}]\n\n{text}\n\n"
             f"시작하기 전에 팀 공유 맥락을 읽어라: {hub / '.herdr-team' / 'context.md'}\n"
             "끝나면 결과를 아래 파일에 써라. 무엇을 했는지, 바꾼 파일, 다른 리포에 영향을 주는 사항,\n"
-            "다른 봇에 필요한 작업, 남은 문제를 30줄 이내로 적는다.\n"
+            "다른 에이전트에 필요한 작업, 남은 문제를 30줄 이내로 적는다.\n"
             f"{report}")
 
 

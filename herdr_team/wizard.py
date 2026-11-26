@@ -1,4 +1,4 @@
-"""Team setup: add, edit and remove bots as often as you like, then save herdr-team.toml.
+"""Team setup: add, edit and remove agents as often as you like, then save herdr-team.toml.
 
 Screens: team (project, team instructions, bot list) → bot (name, folders, purpose, instructions, triggers)
 → trigger. A new bot and a new trigger are step forms. Nothing in herdr-team.toml changes until the user
@@ -19,7 +19,7 @@ from pathlib import Path
 from .board import LIGHT, color, init_colors, palette_index, put, safe_addstr
 from .core import (TEMPLATE_ID_RE, TEMPLATE_SKELETON, TEMPLATES, Bot, Team, Trigger, _read, agent_name, apply_template, bot_home, bot_name_error, clip,
                    default_template, display_width, draft_bots, ensure_home, ensure_instructions, find_repos,
-                   guess_role, load_team, name_error, parse_every, render_soul, repo_ref, resolve_repo, save_team,
+                   guess_role, load_team, name_error, project_error, parse_every, render_soul, repo_ref, resolve_repo, save_team,
                    is_user_template, set_soul_purpose, slugify, soul_description, team_problems, template_path,
                    template_preview, template_purpose, templates, user_instructions, user_template_dir)
 
@@ -48,10 +48,10 @@ def move_first(items: list, i: int) -> list:
 
 def delete_home(hub: Path, name: str) -> None:
     """Delete a bot's home folder, only if it really is one folder directly under this hub's bots/."""
-    base = (hub / ".herdr-team" / "bots").resolve()
+    base = (hub / ".herdr-team" / "agents").resolve()
     home = bot_home(hub, name).resolve()
     if home.parent != base:
-        raise ValueError(f"not a bot home under {base}: {home}")
+        raise ValueError(f"not an agent home under {base}: {home}")
     if home.is_dir():
         shutil.rmtree(home)
 
@@ -131,9 +131,9 @@ def default_purpose(hub: Path, role: str, template: str) -> str:
 
 def bot_preview(hub: Path, d: Draft) -> list[list]:
     b = d.bot
-    rows = [[(b.name or "new bot", f"bot:{b.name}")],
+    rows = [[(b.name or "new agent", f"bot:{b.name}")],
             [(b.role, "")] if b.role else [("(add a one-sentence purpose)", "dim")], []]
-    rows.append([("Folders       ", "dim"), (b.dirs[0] if b.dirs else "bot's home (no repo)", ""),
+    rows.append([("Folders       ", "dim"), (b.dirs[0] if b.dirs else "agent's home (no repo)", ""),
                  ("  runs here" if b.dirs else "", "dim")])
     rows += [[("        ", ""), (x, "")] for x in b.dirs[1:]]
     if has_home(hub, d):
@@ -172,7 +172,7 @@ def _changes(old: Bot, d: Draft, touched: set[str]) -> list[str]:
 
 
 def change_summary(existing: Team | None, project: str, drafts: list[Draft], touched: set[str],
-                   instructions_changed: bool, purge: set[str] = frozenset()) -> list[list]:
+                   instructions_changed: bool, purge: set[str] = frozenset(), master_changed: bool = False) -> list[list]:
     """What saving will do, one row per change."""
     old = {b.name: b for b in existing.bots} if existing else {}
     rows = []
@@ -180,11 +180,11 @@ def change_summary(existing: Team | None, project: str, drafts: list[Draft], tou
         rows.append([("+ ", "ok"), ("new team ", ""), (project, "bold")])
     elif existing.name != project:
         rows.append([("~ ", "warn"), (f"project name {existing.name} → {project}", ""),
-                     ("  (agent names change, so start the team again)", "dim")])
+                     ("  (start the team again after saving)", "dim")])
     for d in drafts:
         if d.origin is None or d.origin not in old:
             rows.append([("+ ", "ok"), (d.bot.name, f"bot:{d.bot.name}"),
-                         (f"  new bot · {where(d.bot.dirs)} · {d.template or default_template(d.bot.dirs)} template"
+                         (f"  new agent · {where(d.bot.dirs)} · {d.template or default_template(d.bot.dirs)} template"
                           f"{' (edited)' if d.soul is not None else ''}", "")])
         else:
             changes = _changes(old[d.origin], d, touched)
@@ -197,7 +197,9 @@ def change_summary(existing: Team | None, project: str, drafts: list[Draft], tou
     for name in sorted(purge):
         rows.append([("- ", "bad"), (f"delete home folder of {name}", "bad"), ("  (SOUL.md, MEMORY.md; can't be undone)", "dim")])
     if instructions_changed:
-        rows.append([("~ ", "warn"), ("team instructions changed", ""), ("  (every bot and the master)", "dim")])
+        rows.append([("~ ", "warn"), ("team instructions changed", ""), ("  (the master and all agents)", "dim")])
+    if master_changed:
+        rows.append([("~ ", "warn"), ("master instructions changed", ""), ("  (master.md)", "dim")])
     return rows or [[("Nothing changed", "dim")]]
 
 
@@ -282,7 +284,7 @@ def chrome(win, ui: Ui, crumb: str, hints: list[tuple[str, str]], progress=None)
     x = put(win, 0, 1, "herdr-team", color("dim"))
     x = put(win, 0, x, "  team setup  ", curses.A_BOLD)
     x = put(win, 0, x, ui.project, color("accent", curses.A_BOLD))
-    x = put(win, 0, x, f"  ·  {len(ui.names)} bot{'s' if len(ui.names) != 1 else ''}", color("dim"))
+    x = put(win, 0, x, f"  ·  {len(ui.names)} agent{'s' if len(ui.names) != 1 else ''}", color("dim"))
     state, style = ("* unsaved", "warn") if ui.dirty else ("✓ saved", "ok")
     if w - display_width(state) - 2 > x:
         safe_addstr(win, 0, w - display_width(state) - 1, state, attr(ui, style))
@@ -514,10 +516,10 @@ def edit_folders(win, ui: Ui, crumb: str, name: str, dirs: list[str], progress=N
 
     def preview(_):
         chosen = [d for d, c in zip(items, on) if c]
-        rows = [[("Runs in    ", "dim"), (chosen[0] if chosen else "the bot's home folder (no repo)", "bold")]]
+        rows = [[("Runs in    ", "dim"), (chosen[0] if chosen else "the agent's home folder (no repo)", "bold")]]
         rows += [[("Also sees  " if i == 0 else "           ", "dim"), (d, "")] for i, d in enumerate(chosen[1:])]
-        rows += [[], [("Pick none for a bot with no repo that works in its home.", "dim")],
-                 [("Several bots may share a repo.", "dim")]]
+        rows += [[], [("Pick none for an agent with no repo that works in its home.", "dim")],
+                 [("Several agents may share a repo.", "dim")]]
         return "Selected folders", rows
 
     while True:
@@ -566,9 +568,9 @@ def edit_trigger(win, ui: Ui, crumb: str, trig: Trigger, others: list[str]) -> T
                lambda v: None if _slug_ok(v) and v not in others else "Use a-z, 0-9, - and _, unique among triggers"),
         field_("How often to check (30s, 10m, 2h, 1d)", trig.every or "10m",
                lambda v: None if parse_every(v) else "Use 30s, 10m, 2h or 1d"),
-        field_("Command to check (runs in the hub; new output gives the bot a task)", trig.run,
+        field_("Command to check (runs in the hub; new output gives the agent a task)", trig.run,
                lambda v: None if v else "A command is required", "e.g. gh pr list --search 'review-requested:@me' --json number,title"),
-        field_("Prompt for the bot when the output changes", trig.prompt, lambda v: None if v else "A prompt is required"),
+        field_("Prompt for the agent when the output changes", trig.prompt, lambda v: None if v else "A prompt is required"),
     ])
     return Trigger(*got) if got else None
 
@@ -578,14 +580,14 @@ def edit_triggers(win, ui: Ui, crumb: str, bot: Bot) -> None:
 
     def preview(i):
         if i >= len(bot.triggers):
-            return "Triggers", [[("Runs a command on a schedule. When its output", "dim")], [("changes, the bot gets the prompt and output as a task.", "dim")]]
+            return "Triggers", [[("Runs a command on a schedule. When its output", "dim")], [("changes, the agent gets the prompt and output as a task.", "dim")]]
         t = bot.triggers[i]
         return t.name, [[("Every    ", "dim"), (t.every, "")], [("Command  ", "dim"), (t.run, "")], [],
                         [("Prompt", "dim")], *[[(ln, "")] for ln in wrap(t.prompt, 60)]]
     while True:
         rows = [[(clip(t.name, 18) + " ", "bold"), (clip(t.every, 5) + " ", "dim"), (t.run, "")] for t in bot.triggers]
         rows += [[("+ add trigger", "accent")]]
-        key, cur = select(win, ui, crumb + " / triggers", "Triggers — new command output gives the bot a task", rows,
+        key, cur = select(win, ui, crumb + " / triggers", "Triggers — new command output gives the agent a task", rows,
                           [("Enter", "edit"), ("n", "add"), ("d", "delete"), ("Esc", "back")],
                           keys="nd", cur=cur, preview=preview)
         if key == "esc":
@@ -645,7 +647,7 @@ def pick_template(win, ui: Ui, crumb: str, name: str, current: str, progress=Non
             message = "Built-in templates are read-only — c duplicates it"
         elif key == "e":
             message = open_editor(win, user_template_dir(ui.hub) / f"{current}.md")
-        elif confirm_in(win, ui, crumb, f"Delete your template {current}? Saved bots keep their SOUL.md."
+        elif confirm_in(win, ui, crumb, f"Delete your template {current}? Saved agents keep their SOUL.md."
                         + (" The built-in one comes back." if current in TEMPLATES else "")):
             (user_template_dir(ui.hub) / f"{current}.md").unlink()
 
@@ -712,11 +714,11 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
                           (f"  {', '.join(t.name for t in bot.triggers)}" if bot.triggers else "", "dim")]),
             ("", []),
             ("done", [("✓ done", "ok")]),
-            ("remove", [("✕ remove bot", "warn")]),
+            ("remove", [("✕ remove agent", "warn")]),
         ]
         kinds, rows = [k for k, _ in items], [r for _, r in items]
-        crumb = f"team / {bot.name or 'new bot'}"
-        key, cur = select(win, ui, crumb, "Edit bot", rows,
+        crumb = f"team / {bot.name or 'new agent'}"
+        key, cur = select(win, ui, crumb, "Edit agent", rows,
                           [("Enter", "edit"), ("e", "open in editor"), ("s", "done"), ("Esc", "cancel")],
                           keys="se", cur=cur, preview=lambda _: ("Preview", bot_preview(ui.hub, d)), message=message)
         message = ""
@@ -742,7 +744,7 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
         if key != "enter":
             continue
         if kind == "name":
-            got = input_line(win, ui, crumb + " / name", "Bot name (the agent is named <project>-<bot>)", bot.name,
+            got = input_line(win, ui, crumb + " / name", "Agent name (e.g. api, AcmeWeb, reviewer)", bot.name,
                              lambda v: bot_name_error(project, v, others))
             if got is not None:
                 bot.name = got
@@ -751,7 +753,7 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
             if got is not None:
                 bot.dirs = got
         elif kind == "purpose":
-            got = input_line(win, ui, crumb + " / purpose", "What is this bot for? (one sentence; it opens SOUL.md)", bot.role)
+            got = input_line(win, ui, crumb + " / purpose", "What is this agent for? (one sentence; it opens SOUL.md)", bot.role)
             if got is not None:
                 bot.role = got
         elif kind == "soul" and not home:
@@ -772,10 +774,10 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
 def new_bot(win, ui: Ui, project: str, others: list[str]) -> Draft | None:
     """Step form: name → folders → template → purpose. Esc goes back a step."""
     names = ["Name", "Folders", "Template", "Purpose"]
-    crumb = "team / new bot"
+    crumb = "team / new agent"
 
     def name_step(vals, i):
-        return input_line(win, ui, crumb, "Bot name (e.g. api, reviewer, scout)", vals[0] or "",
+        return input_line(win, ui, crumb, "Agent name (e.g. api, AcmeWeb, reviewer)", vals[0] or "",
                           lambda v: bot_name_error(project, v, others), progress=(i, names, vals))
 
     def dirs_step(vals, i):
@@ -789,7 +791,7 @@ def new_bot(win, ui: Ui, project: str, others: list[str]) -> Draft | None:
         guess = guess_role(resolve_repo(ui.hub, vals[1][0])) if vals[1] else ""
         shown = [vals[0], where(vals[1]), vals[2], None]
         value = vals[3] if vals[3] and not is_default_purpose(ui.hub, vals[3]) else guess or template_purpose(vals[2], ui.hub)
-        return input_line(win, ui, crumb, "What is this bot for? (one sentence; shown in the roster and on the board)", value,
+        return input_line(win, ui, crumb, "What is this agent for? (one sentence; shown in the roster and on the board)", value,
                           note="Leave it empty to fill in later.", progress=(i, names, shown))
     got = run_steps([name_step, dirs_step, template_step, role_step])
     return Draft(Bot(got[0], got[1], got[3]), got[2], None) if got else None
@@ -808,6 +810,7 @@ class Saved:
     renamed_project: bool
     instructions_changed: bool
     gone: list[str]             # old names no longer in the team (removed or renamed); their agents may still run
+    master_changed: bool = False   # master.md
 
 
 def team_screen(win, hub: Path) -> Saved | None:
@@ -826,6 +829,7 @@ def team_screen(win, hub: Path) -> Saved | None:
     ui = Ui(hub, project, dirty=existing is None)
     instructions_path = hub / ".herdr-team" / "instructions.md"
     instructions_before = user_instructions(hub)
+    master_before = user_instructions(hub, "master.md")
     touched: set[str] = set()
     purge: set[str] = set()   # homes to delete when the team is saved
 
@@ -839,49 +843,53 @@ def team_screen(win, hub: Path) -> Saved | None:
             purge.add(d.origin)
         del drafts[i]
         ui.dirty = True
-    cur, message = 3, ""
-    first = 3   # rows: project, team instructions, separator, bots..., add, separator, save
+    first = 4   # rows: project, team instructions, master, separator, bots..., add, separator, save
+    cur, message = first, ""
     while True:
         ui.project, ui.names = project, [d.bot.name for d in drafts]
-        instr = user_instructions(hub)
+        instr, master = user_instructions(hub), user_instructions(hub, "master.md")
         rows = [[("Project       ", "dim"), (project, "accent")],
                 [("Instructions  ", "dim"), (f"{len(instr.splitlines())} line{'s' if len(instr.splitlines()) != 1 else ''}" if instr else "empty", "" if instr else "dim"),
-                 ("  for every bot and the master", "dim")],
+                 ("  for the master and all agents", "dim")],
+                [("Master        ", "dim"), (f"{len(master.splitlines())} line{'s' if len(master.splitlines()) != 1 else ''}" if master else "empty",
+                                            "" if master else "dim"),
+                 ("  for the master only", "dim")],
                 []]
         rows += [[(clip(d.bot.name, 14) + " ", f"bot:{d.bot.name}"), (clip(where(d.bot.dirs), 16) + " ", "dim"),
                   (d.bot.role or "(no purpose)", "" if d.bot.role else "warn"),
                   (f"  triggers {len(d.bot.triggers)}" if d.bot.triggers else "", "dim")] for d in drafts]
         add_row = first + len(drafts)
         save_row = add_row + 2
-        rows += [[("+ add bot", "accent")], [], [("✓ save and quit", "ok")]]
+        rows += [[("+ add agent", "accent")], [], [("✓ save and quit", "ok")]]
 
         def preview(i):
             if first <= i < add_row:
                 body = bot_preview(hub, drafts[i - first])   # name, purpose, then details: the hint goes high
                 return "Preview", body[:2] + [[("Enter edit (name, folders, purpose) · d remove", "dim")]] + body[2:]
             if i == 0:
-                return "Project", [[("Agent names    ", "dim"), (agent_name(project, "master"), "")],
-                                    [("               ", ""), (agent_name(project, "<bot>"), "")],
+                return "Project", [[("Used to find this team's workspace in herdr.", "dim")], [],
                                     [("Hub            ", "dim"), (str(hub), "")],
                                     [("agent_args     ", "dim"), (" ".join(agent_args) or "none", "")]]
+            if i == 2:
+                return "Master", master_preview(hub, project)
             if i == 1:
                 body = [[(ln, "")] for ln in instr.splitlines()] or [[("Empty for now.", "dim")]]
-                return "Team instructions", body + [[], [("Sent to every bot and the master as user instructions.", "dim")],
+                return "Team instructions", body + [[], [("Sent to the master and all agents as user instructions.", "dim")],
                                                [("Enter or e opens it in your editor. e.g. run tests before reporting.", "dim")]]
-            return "Team", [[(f"{len(drafts)} bot{'s' if len(drafts) != 1 else ''}", "bold")], [],
-                          [("Per-bot instructions: template + ## Extra in SOUL.md.", "dim")],
+            return "Team", [[(f"{len(drafts)} agent{'s' if len(drafts) != 1 else ''}", "bold")], [],
+                          [("Per-agent instructions: template + ## Extra in SOUL.md.", "dim")],
                           [("Instructions for everyone: Instructions row above.", "dim")]]
         key, cur = select(win, ui, "team", "Team", rows,
                           # Most-needed keys first: a narrow footer cuts from the right.
                           [("Enter", "edit"), ("d", "remove"), ("n", "add"), ("s", "save"), ("Esc", "quit"),
                            ("e", "instructions")],
                           keys="ndse", cur=cur, preview=preview, message=message,
-                          note="Suggested bots — d remove · Enter edit · n add" if suggested and drafts
-                          else "" if drafts else "No bots yet. Press n to add one (a bot needs no repo).")
+                          note="Suggested agents — d remove · Enter edit · n add" if suggested and drafts
+                          else "" if drafts else "No agents yet. Press n to add one (an agent needs no repo).")
         message = ""
         names = [d.bot.name for d in drafts]
         if key == "esc":
-            if not ui.dirty or confirm_in(win, ui, "team / quit", "Quit and discard unsaved team changes (bots, folders, names)? "
+            if not ui.dirty or confirm_in(win, ui, "team / quit", "Quit and discard unsaved team changes (agents, folders, names)? "
                                                                  "Files you edited with e are already saved."):
                 return None
         elif key == "s" or (key == "enter" and cur == save_row):
@@ -890,12 +898,18 @@ def team_screen(win, hub: Path) -> Saved | None:
                 message = "Can't save: " + problems[0]
                 continue
             instructions_changed = user_instructions(hub) != instructions_before
-            if not review(win, ui, change_summary(existing, project, drafts, touched, instructions_changed, purge)):
+            if not review(win, ui, change_summary(existing, project, drafts, touched, instructions_changed, purge,
+                                                  user_instructions(hub, "master.md") != master_before)):
                 continue
             team = commit(hub, project, drafts, agent_args, purge)
             return Saved(team, changed_bots(existing, drafts, touched, instructions_changed),
                          bool(existing) and existing.name != project, instructions_changed,
-                         [b.name for b in existing.bots if b.name not in {d.bot.name for d in drafts}] if existing else [])
+                         [b.name for b in existing.bots if b.name not in {d.bot.name for d in drafts}] if existing else [],
+                         bool(existing) and user_instructions(hub, "master.md") != master_before)
+        elif cur == 2 and key in ("enter", "e"):   # Master row: master.md, like the Instructions row
+            message = open_editor(win, ensure_instructions(hub, "master.md"))
+            if user_instructions(hub, "master.md") != master_before:
+                ui.dirty = True
         elif key == "e" or (key == "enter" and cur == 1):
             message = open_editor(win, ensure_instructions(hub))
             if user_instructions(hub) != instructions_before:
@@ -908,8 +922,7 @@ def team_screen(win, hub: Path) -> Saved | None:
         elif key == "d" and first <= cur < add_row:
             remove(cur - first)
         elif key == "enter" and cur == 0:
-            got = input_line(win, ui, "team / project", "Project name (prefix of every agent name)", project,
-                             lambda v: (name_error(v) or name_error(agent_name(v, "master"))) if v else "Name is empty")
+            got = input_line(win, ui, "team / project", "Project name (lowercase; names this team's workspace in herdr)", project, project_error)
             if got and got != project:
                 project, ui.dirty = got, True
         elif key == "enter" and first <= cur < add_row:
@@ -919,6 +932,14 @@ def team_screen(win, hub: Path) -> Saved | None:
                 remove(i)
             elif got:
                 drafts[i], ui.dirty = got, True
+
+
+def master_preview(hub: Path, project: str) -> list[list]:
+    text = user_instructions(hub, "master.md")
+    rows = [[("Instructions (master only)", "bold")]]
+    rows += [[(ln, "")] for ln in text.splitlines()[:12]] or [[("Empty for now.", "dim")]]
+    return rows + [[], [("Enter or e opens master.md in your editor.", "dim")],
+                   [("Applies after /exit and team-up.", "dim")]]
 
 
 def confirm(prompt: str) -> bool:
@@ -941,8 +962,8 @@ def run_wizard(hub: Path) -> int:
         print("Quit without saving.")
         return 1
     team = saved.team
-    print(f"Saved: {hub / 'herdr-team.toml'} ({len(team.bots)} bot{'s' if len(team.bots) != 1 else ''})")
-    print(f"Team instructions: {hub / '.herdr-team' / 'instructions.md'} · bot instructions: {hub / '.herdr-team' / 'bots'}/<bot>/SOUL.md")
+    print(f"Saved: {hub / 'herdr-team.toml'} ({len(team.bots)} agent{'s' if len(team.bots) != 1 else ''})")
+    print(f"Team instructions: {hub / '.herdr-team' / 'instructions.md'} · agent instructions: {hub / '.herdr-team' / 'agents'}/<agent>/SOUL.md")
     try:
         live = team_mod.live_agents()
     except herdr.HerdrError:
@@ -955,12 +976,12 @@ def run_wizard(hub: Path) -> int:
             return team_mod.up(hub) if confirm("Start the team now?") else 0
         for name in saved.gone:
             if agent_name(team.name, name) in live:
-                print(f"{agent_name(team.name, name)}: renamed or removed but still running. Type /exit in its pane.")
-        if saved.instructions_changed:
-            print("To give the master the new team instructions, type /exit in its pane, then run the team-up action (suggested key prefix+shift+u).")
+                print(f"{name}: renamed or removed but still running. Type /exit in its pane.")
+        if saved.instructions_changed or saved.master_changed:
+            print("To give the master the changes, type /exit in its pane, then run the team-up action (suggested key prefix+shift+u).")
         if not saved.changed:
             return 0
-        if confirm(f"Restart the changed bots? ({', '.join(saved.changed)})"):
+        if confirm(f"Restart the changed agents? ({', '.join(saved.changed)})"):
             return team_mod.restart(hub, saved.changed)
         print(f"To apply later: herdr-team restart {' '.join(saved.changed)}")
         return 0

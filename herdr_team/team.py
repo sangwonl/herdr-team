@@ -9,7 +9,8 @@ from . import board, herdr
 from .core import (parse_every, trigger_fire,
                    load_questions, next_question_id, question_blocked, roster_lines, save_questions,
                    transcript_digest, transcript_path,
-                   Bot, Team, agent_name, canon_bot, collaborator_links, collaborators_block, linked_teams, bot_cwd, instructions_block, bot_home, ensure_home, render_preamble, append_log, build_prompt, classify, load_tasks, load_team,
+                   Bot, Team, agent_name, canon_bot, collaborator_links, collaborators_block, linked_teams,
+                   master_instructions_block, bot_cwd, instructions_block, bot_home, ensure_home, render_preamble, append_log, build_prompt, classify, load_tasks, load_team,
                    locked, next_task_id, read_log, resolve_repo, save_tasks, state_dir, update_tasks,
                    wait_done)
 
@@ -31,12 +32,15 @@ def master_prompt(hub: Path) -> str:
     """master-prompt.md plus the team-wide user instructions and linked teams."""
     base = (PLUGIN_ROOT / "master-prompt.md").read_text(encoding="utf-8").rstrip("\n")
     team = load_team(hub)
-    return "\n".join([base, "", *instructions_block(hub), *(collaborators_block(team) if team else [])])
+    return "\n".join([base, "", *instructions_block(hub), *(collaborators_block(team) if team else []),
+                      *master_instructions_block(hub)])
 
 
 def master_args(team: Team) -> list[str]:
     return ["--append-system-prompt-file", str(team.hub / ".herdr-team" / "MASTER.md"),
             "--allowedTools", "Bash(herdr-team *)", _edit(team.hub / ".herdr-team" / "context.md"), *_read_others(team)]
+    # No agent_args: the team's are for bots (e.g. --permission-mode acceptEdits), and the master
+    # must not edit repos without asking.
 
 
 def bot_args(team: Team, bot: Bot) -> list[str]:
@@ -126,7 +130,7 @@ def up(hub: Path, focus: bool = True) -> int:
         print("Could not read herdr-team.toml.")
         return 1
     if not team.bots:
-        print("The team has no bots. Add some with the team-setup action (suggested key prefix+shift+s).")
+        print("The team has no agents. Add some with the team-setup action (suggested key prefix+shift+s).")
         return 1
     state_dir(hub)
     live = live_agents()
@@ -208,7 +212,7 @@ def up(hub: Path, focus: bool = True) -> int:
             failed += 1
             print(f"{bot.name}\tfailed: {getattr(e, 'message', 'no pane found in its tab')}")
     if started:
-        append_log(hub, "up", text=f"bots {started}/{len(team.bots)}")
+        append_log(hub, "up", text=f"agents {started}/{len(team.bots)}")
     if any(b.triggers for b in team.bots) and "watch" not in tabs:
         try:
             pane = herdr.run("tab", "create", "--workspace", ws_id, "--cwd", str(hub), "--label", "watch",
@@ -294,12 +298,12 @@ def ask(hub: Path, bot_name: str, text: str) -> int:
     bot_name = canon_bot(team, bot_name.split("/", 1)[-1])
     bot = next((b for b in team.bots if b.name == bot_name), None) if team else None
     if caller(hub) != "master":
-        print('Only the master hands out tasks. If another bot needs to do something, put it in your report. '
-              'To find something out, use `herdr-team question <bot> "<question>"`.')
+        print('Only the master hands out tasks. If another agent needs to do something, put it in your report. '
+              'To find something out, use `herdr-team question <agent> "<question>"`.')
         return 2
     if bot is None:
         names = ", ".join(b.name for b in team.bots) if team else ""
-        print(f"{bot_name}: no such bot in the team. Bots: {names}")
+        print(f"{bot_name}: no such agent in the team. Agents: {names}")
         return 2
     sent, info = send_task(hub, team, bot, text)
     print(f"{bot_name} {info} sent" if sent else f"{bot_name}: {info}")
@@ -389,7 +393,7 @@ def restart(hub: Path, names: list[str], wait: float = 20.0) -> int:
     wanted = names or [b.name for b in team.bots]
     unknown = [n for n in wanted if n not in [b.name for b in team.bots]]
     if unknown:
-        print(f"No such bot in the team: {', '.join(unknown)}")
+        print(f"No such agent in the team: {', '.join(unknown)}")
         return 2
     live = live_agents()
     stopping = []
@@ -411,7 +415,7 @@ def restart(hub: Path, names: list[str], wait: float = 20.0) -> int:
         gone = set(stopping) - set(live_agents())
         stopping = [n for n in stopping if n not in gone]
     if stopping:
-        print(f"Did not exit: {', '.join(stopping)} — check those panes.")
+        print(f"Did not exit: {', '.join(n for n in wanted if agent_name(team.name, n) in stopping)} — check those panes.")
     time.sleep(1.0)   # let the shells come back to their prompts
     return up(hub, focus=False) or (2 if skipped else 0)   # `up` also starts bots that were not running
 
@@ -465,7 +469,7 @@ def roster(hub: Path) -> int:
             continue
         def ostatus(who: str) -> str:
             return live.get(agent_name(other.name, who), {}).get("agent_status", "not running")
-        print(f"\nTeam {other.name} ({other.hub}) · ask with `herdr-team question {other.name}/<bot|master> ...`")
+        print(f"\nTeam {other.name} ({other.hub}) · ask with `herdr-team question {other.name}/<agent|master> ...`")
         print(f"- {other.name}/master [{ostatus('master')}]")
         for bot, line in zip(other.bots, roster_lines(other, english=True)):
             print(f"- {other.name}/{line[2:]} [{ostatus(bot.name)}]")
@@ -478,7 +482,7 @@ def peek(hub: Path, target: str) -> int:
         print(err)
         return 2
     if not _known(team, who):
-        print(f"{target}: no such bot in {team.name}.")
+        print(f"{target}: no such agent in {team.name}.")
         return 2
     hub = team.hub
     name, agent = _agent_for(team, who)
@@ -511,7 +515,7 @@ def nudge(hub: Path, who: str, text: str) -> int:
         return 2
     who = who.split("/", 1)[-1]
     if not _known(team, who) or who == "master":
-        print(f"{who}: no such bot in the team.")
+        print(f"{who}: no such agent in the team.")
         return 2
     name, agent = _agent_for(team, who)
     if agent is None:
@@ -537,7 +541,7 @@ def question(hub: Path, target: str, text: str, timeout: float = 100.0, poll: fl
         print(err)
         return 2
     if not _known(tteam, who):
-        print(f"{target}: no such bot in {'the team' if tteam is team else tteam.name}.")
+        print(f"{target}: no such agent in {'the team' if tteam is team else tteam.name}.")
         return 2
     other = tteam is not team
     if not other and who == asker:
@@ -639,14 +643,14 @@ def watch_tick(hub: Path, state: WatchState, now: float) -> None:
             if state_name == "blocked" and tasks[bot]["id"] not in state.told_blocked:
                 state.told_blocked.add(tasks[bot]["id"])
                 append_log(hub, "blocked", bot, tasks[bot]["id"])
-                state.pending.append(f"[herdr-team] {bot} 이 트리거 '{tasks[bot].get('title', '')}' 작업 중 사용자 확인을 "
+                state.pending.append(f"[herdr-team] 에이전트 {bot} 의 트리거 '{tasks[bot].get('title', '')}' 작업이 사용자 확인을 "
                                      "기다리고 있다. 사용자에게 알려라.")
             if state_name in ("reported", "no_report"):
                 task = tasks[bot]
                 done.append((bot, task["id"]))
                 append_log(hub, "trigger_done", bot, task["id"], task.get("title", ""))
                 report = task["report"] if os.path.exists(task.get("report", "")) else "보고서 없음"
-                state.pending.append(f"[herdr-team] {bot} 이 트리거 '{task.get('title', '')}' 작업을 마쳤다. 보고서: {report}")
+                state.pending.append(f"[herdr-team] 에이전트 {bot} 의 트리거 '{task.get('title', '')}' 작업이 끝났다. 보고서: {report}")
                 print(f"{bot}: trigger task {task['id']} {state_name}", flush=True)
         if done:
             update_tasks(hub, lambda t: [t.pop(b) for b, tid in done if t.get(b, {}).get("id") == tid])

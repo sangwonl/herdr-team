@@ -2,9 +2,9 @@
 
 https://github.com/user-attachments/assets/334d8fb5-1fd5-40d7-a9f9-793bd1237e1f
 
-A [herdr](https://herdr.dev) plugin that runs a team of [Claude Code](https://claude.com/claude-code) agents across your repos. You talk to one **master** agent; it hands work to **bots**, each in its own tab, and collects their reports. A status board shows what everyone is doing. A bot can own one repo, look at several, or work with no repo at all.
+A [herdr](https://herdr.dev) plugin that runs a team of [Claude Code](https://claude.com/claude-code) agents across your repos. You talk to one **master** agent; it hands work to its **agents**, each in its own tab, and collects their reports. A status board shows what everyone is doing. An agent can own one repo, look at several, or work with no repo at all.
 
-**Requirements:** herdr 0.9.5+ (macOS or Linux), Python 3.11+ as `python3`, Claude Code. Setup, the board and the CLI are in English; agent prompts and bot templates are still in Korean.
+**Requirements:** herdr 0.9.5+ (macOS or Linux), Python 3.11+ as `python3`, Claude Code. Setup, the board and the CLI are in English; agent prompts and templates are still in Korean.
 
 ## Install
 
@@ -34,57 +34,59 @@ command = "herdr-team.team-up"
 description = "start team"
 ```
 
-The master and bots get `herdr-team` on their `PATH` automatically. Tabs that `up` creates get it too.
+The master and its agents get `herdr-team` on their `PATH` automatically. Tabs that `up` creates get it too.
 
 ## Quick start
 
 1. In herdr, open a pane in your hub: a folder that holds your repos (or is one).
-2. `prefix+shift+s`: pick bots, then `s` to save. Each repo starts with one bot.
-3. `prefix+shift+u`: opens the master, the board and one tab per bot.
+2. `prefix+shift+s`: pick agents, then `s` to save. Each repo starts with one agent.
+3. `prefix+shift+u`: opens the master, the board and one tab per agent.
 4. Tell the master what you want, e.g. "ask api to add a /health endpoint".
 
-Setup shows its own key hints. After saving, it offers to restart the bots that changed. To check a bot, press `Enter` on its card in the board (`prefix+t`) or use herdr's `prefix+g`.
+Setup shows its own key hints. After saving, it offers to restart the agents that changed. To check an agent, press `Enter` on its card in the board (`prefix+t`) or use herdr's `prefix+g`.
 Board keys: `↑` `↓` (or `j` `k`) move · `Enter` jump to that agent's pane · `l` log size · `q` close.
 
 ## Working with the master
 
-- The master gives each bot one task at a time (`ask`), waits for the reports (`wait`), and can look in (`peek`), redirect (`nudge`) or just ask a question (`question`).
-- Bots write results to `.herdr-team/reports/`, read each other's reports, and ask each other questions. Only the master hands out work.
-- `.herdr-team/context.md` holds goals, contracts between repos and decisions. The master keeps it current, and every bot reads it before a task.
-- Permissions granted at start: the master may run any `herdr-team` command. Bots may run only `question`, `roster` and `peek`, and may edit only their own home, `reports/` and `answers/`. Everything else goes through Claude Code's normal approval prompts.
+- The master gives each agent one task at a time (`ask`), waits for the reports (`wait`), and can look in (`peek`), redirect (`nudge`) or just ask a question (`question`).
+- Agents write results to `.herdr-team/reports/`, read each other's reports, and ask each other questions. Only the master hands out work.
+- `.herdr-team/context.md` holds goals, contracts between repos and decisions. The master keeps it current, and every agent reads it before a task.
+- Permissions granted at start: the master may run any `herdr-team` command. Agents may run only `question`, `roster` and `peek`, and may edit only their own home, `reports/` and `answers/`. Everything else goes through Claude Code's normal approval prompts.
 
 ## Instructions
 
-Each bot's instructions come in three layers:
+Each agent's instructions come in three layers:
 
-1. **Template**: the defaults written into a new bot's `.herdr-team/bots/<bot>/SOUL.md`. Templates: `developer`, `frontend`, `backend`, `devops`, `qa`, `security`, `data`, `repo-owner`, `reviewer`, `writer`, `researcher`, `blank`.
+1. **Template**: the defaults written into a new agent's `.herdr-team/agents/<agent>/SOUL.md`. Templates: `developer`, `frontend`, `backend`, `devops`, `qa`, `security`, `data`, `repo-owner`, `reviewer`, `writer`, `researcher`, `blank`.
    Each template has a default purpose, used when you leave Purpose empty.
    Your own templates go in `.herdr-team/templates/<id>.md` (`n` new, `c` copy, `e` edit, `d` delete in the template list). They use the same format: `# {name}`, then `{purpose: default purpose sentence}`, then `## How I work` and `## Never` bullets. A file with a built-in id replaces that template in this hub.
-2. **Team-wide**: `.herdr-team/instructions.md` goes to every bot and the master (`e` on setup's main screen). A file with only comments is ignored.
-3. **Per bot**: the `## Extra` section of `SOUL.md`. It is kept when you re-apply a template.
+2. **Team-wide**: `.herdr-team/instructions.md` goes to the master and all its agents (`e` on setup's main screen). A file with only comments is ignored.
+3. **Per agent**: the `## Extra` section of `SOUL.md`. It is kept when you re-apply a template.
 
-Agents read these at start. Restart bots after a change. For the master, `/exit` it and start the team again.
+The master also has instructions of its own: `.herdr-team/master.md` (the `Master` row on setup's main screen). They are added after the team-wide ones and override the master's built-in instructions. A file with only comments is ignored. The team's `agent_args` are not passed to the master.
+
+Agents read these at start. Restart them after a change. For the master, `/exit` it and start the team again.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `herdr-team setup` | Team setup: create the team, add, change and remove bots and triggers (same as `team-setup`) |
+| `herdr-team setup` | Team setup: create the team, add, change and remove agents and triggers (same as `team-setup`) |
 | `herdr-team up` | Start the team; skips what is already running (same as `team-up`) |
 | `herdr-team board` | Status board (same as `team-board`) |
-| `herdr-team restart [bot...]` | Restart bots (all if none given) to apply changes. Busy bots are skipped |
-| `herdr-team ask <bot> "<task>"` | Give a bot a task (master only) |
-| `herdr-team wait [bot...]` | Wait until open tasks finish or a bot gets blocked |
-| `herdr-team peek <bot>` | A bot's state, task, last tool call and recent messages |
-| `herdr-team nudge <bot> "<message>"` | Redirect a working bot (master only) |
-| `herdr-team question <bot> "<question>"` | Ask and wait for the answer |
+| `herdr-team restart [agent...]` | Restart agents (all if none given) to apply changes. Busy agents are skipped |
+| `herdr-team ask <agent> "<task>"` | Give an agent a task (master only) |
+| `herdr-team wait [agent...]` | Wait until open tasks finish or an agent gets blocked |
+| `herdr-team peek <agent>` | An agent's state, task, last tool call and recent messages |
+| `herdr-team nudge <agent> "<message>"` | Redirect a working agent (master only) |
+| `herdr-team question <agent> "<question>"` | Ask and wait for the answer |
 | `herdr-team roster` | Team members and their states |
 
-Commands find the hub by looking up from the current folder, or use `HERDR_TEAM_HUB`. Exit codes: `0` ok · `1` herdr error · `2` refused, unknown or not-running bot, or a bot is blocked · `3` timed out.
+Commands find the hub by looking up from the current folder, or use `HERDR_TEAM_HUB`. Exit codes: `0` ok · `1` herdr error · `2` refused, unknown or not-running agent, or an agent is blocked · `3` timed out.
 
 ## Triggers
 
-Add triggers in setup (bot → triggers). Each one runs its `run` command on a schedule; when the output changes, the bot gets a task.
+Add triggers in setup (agent → triggers). Each one runs its `run` command on a schedule; when the output changes, the agent gets a task.
 
 ## Collaborators
 
@@ -98,14 +100,14 @@ hub = "/Users/me/work/api-hub"    # absolute path of the other hub
 
 They are linked only when both sides list each other; otherwise `roster` says what is missing. Restart the team after a change.
 
-- Can: see the other team in `roster`, ask it with `herdr-team question <team>/<bot|master> "..."`, and read its `.herdr-team/context.md` (agents are told to read it before work).
+- Can: see the other team in `roster`, ask it with `herdr-team question <team>/<agent|master> "..."`, and read its `.herdr-team/context.md` (agents are told to read it before work).
 - Can't: `ask` or `nudge` across teams. Work for another team goes through that team's master.
-- A repo both teams use is owned by one team. Only the owner's bots change it; the other team reads it and asks the owner for changes.
+- A repo both teams use is owned by one team. Only the owner's agents change it; the other team reads it and asks the owner for changes.
 
 ## Security
 
-- Triggers (`[[bots.triggers]]` in `herdr-team.toml`) run their `run` command with `sh -c` as you. Anyone who can write that file can run commands on your machine.
-- Trigger output goes into the bot's prompt verbatim, so outside text such as PR titles can act as instructions.
+- Triggers (`[[agents.triggers]]` in `herdr-team.toml`) run their `run` command with `sh -c` as you. Anyone who can write that file can run commands on your machine.
+- Trigger output goes into the agent's prompt verbatim, so outside text such as PR titles can act as instructions.
 - Only run teams from hubs you set up yourself.
 
 ## Development

@@ -21,7 +21,7 @@ def need_hub(args) -> Path:
         sys.exit(core.spec_error(hub))
     if hub is None or core.load_team(hub) is None:
         sys.exit("No herdr-team.toml found. Create a team first with the team-setup action (suggested key prefix+shift+s) in the hub folder.")
-    # Bot names are matched in any case: `ask acmeweb` reaches AcmeWeb.
+    # Agent names are matched in any case: `ask acmeweb` reaches AcmeWeb.
     team = core.load_team(hub)
     if getattr(args, "bot", None):
         args.bot = core.canon_bot(team, args.bot)
@@ -77,24 +77,24 @@ def action(name: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="herdr-team")
     sub = p.add_subparsers(dest="cmd", required=True, metavar="<command>")
-    sub.add_parser("setup", help="Team setup: create the team, add, change and remove bots and triggers")
+    sub.add_parser("setup", help="Team setup: create the team, add, change and remove agents and triggers")
     sub.add_parser("up", help="Start the team (skips what is already running)")
     sub.add_parser("board", help="Status board")
-    rs = sub.add_parser("restart", help="Restart bots to apply changed settings (all if none given; busy bots are skipped)")
-    rs.add_argument("bots", nargs="*")
-    k = sub.add_parser("ask", help="Give a bot a task")
-    k.add_argument("bot")
+    rs = sub.add_parser("restart", help="Restart agents to apply changed settings (all if none given; busy agents are skipped)")
+    rs.add_argument("bots", nargs="*", metavar="agent")
+    k = sub.add_parser("ask", help="Give an agent a task")
+    k.add_argument("bot", metavar="agent")
     k.add_argument("text", nargs="+")
-    w = sub.add_parser("wait", help="Wait up to 30 min for open tasks (exit 0 all done / 2 a bot is blocked / 3 timed out)")
-    w.add_argument("bots", nargs="*")
+    w = sub.add_parser("wait", help="Wait up to 30 min for open tasks (exit 0 all done / 2 an agent is blocked / 3 timed out)")
+    w.add_argument("bots", nargs="*", metavar="agent")
     sub.add_parser("roster", help="Team members and each one's state")
-    pk = sub.add_parser("peek", help="Summary of what a bot is doing now")
-    pk.add_argument("bot")
-    n = sub.add_parser("nudge", help="Send a course correction to a working bot (no new task)")
-    n.add_argument("bot")
+    pk = sub.add_parser("peek", help="Summary of what an agent is doing now")
+    pk.add_argument("bot", metavar="agent")
+    n = sub.add_parser("nudge", help="Send a course correction to a working agent (no new task)")
+    n.add_argument("bot", metavar="agent")
     n.add_argument("text", nargs="+")
-    q = sub.add_parser("question", help="Ask another bot (or master) and wait up to 100 s for the answer (exit 3 = no answer yet)")
-    q.add_argument("bot")
+    q = sub.add_parser("question", help="Ask another agent (or the master) and wait up to 100 s for the answer (exit 3 = no answer yet)")
+    q.add_argument("bot", metavar="agent")
     q.add_argument("text", nargs="+")
     # Hidden: run by `up` (watch), by the plugin manifest (action), and by developers (selftest).
     sub.add_parser("watch")
@@ -106,6 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # Any command moves the old .herdr-team/bots to agents/ once, before a screen opens, so the
+    # notice is seen. Agents started before the move still point at the old folder.
+    hub = hub_from(args) if args.cmd != "selftest" else None
+    if hub and core.migrate_homes(hub):
+        print("Moved .herdr-team/bots to .herdr-team/agents. Running agents still use the old paths: restart them "
+              "to pick up the new paths (herdr-team restart; for the master, /exit and then team-up).", file=sys.stderr)
 
     if args.cmd == "selftest":
         from . import selftest
