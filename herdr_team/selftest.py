@@ -657,13 +657,13 @@ def test_cli_surface():
     from .__main__ import build_parser
     parser = build_parser()
     shown = parser.format_help()
-    for cmd in ("edit", "up", "board", "restart", "ask", "wait", "peek", "nudge", "question", "roster"):
+    for cmd in ("setup", "up", "board", "restart", "ask", "wait", "peek", "nudge", "question", "roster"):
         assert f"    {cmd} " in shown, cmd
     for gone in ("init", "attach", "--hub", "action", "watch", "selftest"):
         assert gone not in shown, gone
     assert parser.parse_args(["action", "board"]).name == "board"          # 숨겼지만 동작한다
     assert parser.parse_args(["watch"]).cmd == "watch" and parser.parse_args(["selftest"]).cmd == "selftest"
-    for argv in (["init"], ["attach"], ["--hub", "x", "up"], ["up", "--no-focus"], ["wait", "--timeout", "1"],
+    for argv in (["init"], ["attach"], ["edit"], ["--hub", "x", "up"], ["up", "--no-focus"], ["wait", "--timeout", "1"],
                  ["question", "a", "x", "--timeout", "1"], ["restart", "--force"]):
         with contextlib.redirect_stderr(io.StringIO()):
             try:

@@ -1,4 +1,4 @@
-"""Team editor: add, edit and remove bots as often as you like, then save herdr-team.toml.
+"""Team setup: add, edit and remove bots as often as you like, then save herdr-team.toml.
 
 Screens: team (project, team instructions, bot list) → bot (name, folders, purpose, instructions, triggers)
 → trigger. A new bot and a new trigger are step forms. Nothing in herdr-team.toml changes until the user
@@ -241,7 +241,7 @@ def chrome(win, ui: Ui, crumb: str, hints: list[tuple[str, str]], progress=None)
     win.erase()
     h, w = win.getmaxyx()
     x = put(win, 0, 1, "herdr-team", color("dim"))
-    x = put(win, 0, x, "  team editor  ", curses.A_BOLD)
+    x = put(win, 0, x, "  team setup  ", curses.A_BOLD)
     x = put(win, 0, x, ui.project, color("accent", curses.A_BOLD))
     x = put(win, 0, x, f"  ·  {len(ui.names)} bot{'s' if len(ui.names) != 1 else ''}", color("dim"))
     state, style = ("* unsaved", "warn") if ui.dirty else ("✓ saved", "ok")
@@ -653,7 +653,7 @@ def new_bot(win, ui: Ui, project: str, others: list[str]) -> Draft | None:
         guess = guess_role(resolve_repo(ui.hub, vals[1][0])) if vals[1] else ""
         shown = [vals[0], where(vals[1]), vals[2], None]
         return input_line(win, ui, crumb, "What is this bot for? (one sentence; shown in the roster and on the board)", vals[3] or guess,
-                          note="Leave it empty to fill in later from the bot editor.", progress=(i, names, shown))
+                          note="Leave it empty to fill in later.", progress=(i, names, shown))
     got = run_steps([name_step, dirs_step, template_step, role_step])
     return Draft(Bot(got[0], got[1], got[3]), got[2], None) if got else None
 

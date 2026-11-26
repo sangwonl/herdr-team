@@ -20,7 +20,7 @@ def need_hub(args) -> Path:
     if hub is not None and core.spec_error(hub):
         sys.exit(core.spec_error(hub))
     if hub is None or core.load_team(hub) is None:
-        sys.exit("No herdr-team.toml found. Create a team first with the team-setup action (suggested key prefix+shift+e) in the hub folder.")
+        sys.exit("No herdr-team.toml found. Create a team first with the team-setup action (suggested key prefix+shift+s) in the hub folder.")
     return hub
 
 
@@ -51,7 +51,7 @@ def action(name: str) -> int:
             return 0
         if name == "up":
             if hub is None:
-                print("No herdr-team.toml found. Create a team first with the team-setup action (suggested key prefix+shift+e).", file=sys.stderr)
+                print("No herdr-team.toml found. Create a team first with the team-setup action (suggested key prefix+shift+s).", file=sys.stderr)
                 return 1
             from . import team
             return team.up(hub)
@@ -71,7 +71,7 @@ def action(name: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="herdr-team")
     sub = p.add_subparsers(dest="cmd", required=True, metavar="<command>")
-    sub.add_parser("edit", help="Team editor: create the team, add, change and remove bots and triggers")
+    sub.add_parser("setup", help="Team setup: create the team, add, change and remove bots and triggers")
     sub.add_parser("up", help="Start the team (skips what is already running)")
     sub.add_parser("board", help="Status board")
     rs = sub.add_parser("restart", help="Restart bots to apply changed settings (all if none given; busy bots are skipped)")
@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         from . import board
         hub = hub_from(args)
         return board.run_board(hub if hub and core.load_team(hub) else None)
-    if args.cmd == "edit":
+    if args.cmd == "setup":
         from . import wizard
         hub = hub_from(args) or Path.cwd().resolve()
         if core.spec_error(hub):

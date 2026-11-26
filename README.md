@@ -4,7 +4,7 @@ https://github.com/user-attachments/assets/334d8fb5-1fd5-40d7-a9f9-793bd1237e1f
 
 A [herdr](https://herdr.dev) plugin that runs a team of [Claude Code](https://claude.com/claude-code) agents across your repos. You talk to one **master** agent; it hands work to **bots**, each in its own tab, and collects their reports. A status board shows what everyone is doing. A bot can own one repo, look at several, or work with no repo at all.
 
-**Requirements:** herdr 0.9.5+ (macOS or Linux), Python 3.11+ as `python3`, Claude Code. The editor, board and CLI are in English; agent prompts and bot templates are still in Korean.
+**Requirements:** herdr 0.9.5+ (macOS or Linux), Python 3.11+ as `python3`, Claude Code. Setup, the board and the CLI are in English; agent prompts and bot templates are still in Korean.
 
 ## Install
 
@@ -22,10 +22,10 @@ command = "herdr-team.team-board"
 description = "team board"
 
 [[keys.command]]
-key = "prefix+shift+e"
+key = "prefix+shift+s"
 type = "plugin_action"
 command = "herdr-team.team-setup"
-description = "edit team"
+description = "team setup"
 
 [[keys.command]]
 key = "prefix+shift+u"
@@ -39,11 +39,11 @@ The master and bots get `herdr-team` on their `PATH` automatically. Tabs that `u
 ## Quick start
 
 1. In herdr, open a pane in your hub: a folder that holds your repos (or is one).
-2. `prefix+shift+e`: pick bots, then `s` to save. Each repo starts with one bot.
+2. `prefix+shift+s`: pick bots, then `s` to save. Each repo starts with one bot.
 3. `prefix+shift+u`: opens the master, the board and one tab per bot.
 4. Tell the master what you want, e.g. "ask api to add a /health endpoint".
 
-The editor shows its own key hints. After saving, it offers to restart the bots that changed. To check a bot, press `Enter` on its card in the board (`prefix+t`) or use herdr's `prefix+g`.
+Setup shows its own key hints. After saving, it offers to restart the bots that changed. To check a bot, press `Enter` on its card in the board (`prefix+t`) or use herdr's `prefix+g`.
 Board keys: `↑` `↓` (or `j` `k`) move · `Enter` jump to that agent's pane · `l` log size · `q` close.
 
 ## Working with the master
@@ -58,7 +58,7 @@ Board keys: `↑` `↓` (or `j` `k`) move · `Enter` jump to that agent's pane �
 Each bot's instructions come in three layers:
 
 1. **Template**: the defaults written into a new bot's `.herdr-team/bots/<bot>/SOUL.md`. Templates: `developer`, `frontend`, `backend`, `devops`, `qa`, `security`, `data`, `repo-owner`, `reviewer`, `writer`, `researcher`, `blank`.
-2. **Team-wide**: `.herdr-team/instructions.md` goes to every bot and the master (`e` on the editor's main screen). A file with only comments is ignored.
+2. **Team-wide**: `.herdr-team/instructions.md` goes to every bot and the master (`e` on setup's main screen). A file with only comments is ignored.
 3. **Per bot**: the `## Extra` section of `SOUL.md`. It is kept when you re-apply a template.
 
 Agents read these at start. Restart bots after a change. For the master, `/exit` it and start the team again.
@@ -67,7 +67,7 @@ Agents read these at start. Restart bots after a change. For the master, `/exit`
 
 | Command | What it does |
 |---|---|
-| `herdr-team edit` | Team editor (same as `team-setup`) |
+| `herdr-team setup` | Team setup: create the team, add, change and remove bots and triggers (same as `team-setup`) |
 | `herdr-team up` | Start the team; skips what is already running (same as `team-up`) |
 | `herdr-team board` | Status board (same as `team-board`) |
 | `herdr-team restart [bot...]` | Restart bots (all if none given) to apply changes. Busy bots are skipped |
@@ -82,7 +82,7 @@ Commands find the hub by looking up from the current folder, or use `HERDR_TEAM_
 
 ## Triggers
 
-Add triggers in the editor (bot → triggers). Each one runs its `run` command on a schedule; when the output changes, the bot gets a task.
+Add triggers in setup (bot → triggers). Each one runs its `run` command on a schedule; when the output changes, the bot gets a task.
 
 ## Security
 

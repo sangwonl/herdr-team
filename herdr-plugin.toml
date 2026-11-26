@@ -26,11 +26,11 @@ command = ["python3", "-m", "herdr_team", "action", "up"]
 
 [[panes]]
 id = "setup"
-title = "Team setup"
+title = "Team: setup"
 placement = "popup"
 width = "70%"
 height = "80%"
-command = ["python3", "-m", "herdr_team", "edit"]
+command = ["python3", "-m", "herdr_team", "setup"]
 
 [[panes]]
 id = "board"

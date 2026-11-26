@@ -120,7 +120,7 @@ def up(hub: Path, focus: bool = True) -> int:
         print("Could not read herdr-team.toml.")
         return 1
     if not team.bots:
-        print("The team has no bots. Add some with the team-setup action (suggested key prefix+shift+e).")
+        print("The team has no bots. Add some with the team-setup action (suggested key prefix+shift+s).")
         return 1
     state_dir(hub)
     live = live_agents()
