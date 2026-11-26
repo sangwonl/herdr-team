@@ -11,29 +11,40 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 SPEC_FILE = "herdr-team.toml"
-NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")      # herdr agent names and the project name
+BOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")   # bot names keep the repo folder's case
 
 
 # ---- names -------------------------------------------------------------------
 
-def slugify(text: str) -> str:
-    s = re.sub(r"[^a-z0-9_-]+", "-", text.lower())
+def slugify(text: str, keep_case: bool = False) -> str:
+    """Project names: lowercase, starting with a letter. Bot names (keep_case): the folder's case,
+    may start with a digit, since the herdr agent name starts with the project name anyway."""
+    s = re.sub(r"[^A-Za-z0-9_-]+", "-", text if keep_case else text.lower())
     s = re.sub(r"-{2,}", "-", s)
-    s = re.sub(r"^[^a-z]+", "", s)
+    s = re.sub(r"^[^A-Za-z0-9]+" if keep_case else r"^[^a-z]+", "", s)
     return s.strip("-")
 
 
 def agent_name(project: str, bot: str) -> str:
-    return f"{project}-{bot}"
+    """The herdr agent name. herdr 0.9.5 accepts only lowercase, so bot names lose their case here."""
+    return f"{project}-{bot}".lower()
+
+
+def canon_bot(team: "Team | None", name: str) -> str:
+    """The team's spelling of a bot name typed in any case; unknown names come back unchanged."""
+    return next((b.name for b in team.bots if b.name.lower() == name.lower()), name) if team else name
 
 
 def bot_name_error(project: str, name: str, others: list[str]) -> str | None:
     if not name:
         return "Name is empty"
-    if name in ("master", "watch"):
+    if name.lower() in ("master", "watch"):
         return f"{name} is reserved by herdr-team"
-    if name in others:
-        return f"Name already in use: {name}"
+    if name.lower() in (o.lower() for o in others):
+        return f"Name already in use (case is ignored): {name}"
+    if not BOT_RE.match(name):
+        return "Use only letters, digits, - and _; start with a letter or digit"
     return name_error(agent_name(project, name))
 
 
@@ -120,7 +131,7 @@ def _parse_team(hub: Path) -> Team:
         return value
 
     project = data.get("name")
-    if not isinstance(project, str) or name_error(agent_name(project, "master")):
+    if not isinstance(project, str) or name_error(project) or name_error(agent_name(project, "master")):
         raise ValueError(f"invalid project name: {project!r}")
     bots, seen = [], set()
     raw_bots = data.get("bots", [])
@@ -129,10 +140,10 @@ def _parse_team(hub: Path) -> Team:
     for b in raw_bots:
         name = b.get("name")
         # The name becomes a folder and a herdr agent name, so it must be a plain slug.
-        if not isinstance(name, str) or name in RESERVED or name in seen or name_error(agent_name(project, name)) \
-                or not NAME_RE.match(name):
+        if not isinstance(name, str) or name.lower() in RESERVED or name.lower() in seen \
+                or name_error(agent_name(project, name)) or not BOT_RE.match(name):
             raise ValueError(f"invalid bot name: {name!r}")
-        seen.add(name)
+        seen.add(name.lower())
         if "dirs" in b:
             dirs = strings(b["dirs"], f"dirs of {name}")
         else:
@@ -258,7 +269,44 @@ def _templates() -> dict[str, str]:
     return {t: _LABELS.get(t, "Blank" if t == "blank" else t) for t in ids}
 
 
-TEMPLATES = _templates()
+TEMPLATES = _templates()   # built-in only; templates(hub) adds the hub's own
+PURPOSE_RE = re.compile(r"\{purpose(?::\s*([^}]*))?\}")   # {purpose} or {purpose: default sentence}
+TEMPLATE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+TEMPLATE_SKELETON = ("# {name}\n\n{purpose: 이 봇이 하는 일을 한 문장으로.}\n\n## How I work\n- \n\n## Never\n- \n")
+
+
+def user_template_dir(hub: Path) -> Path:
+    return hub / ".herdr-team" / "templates"
+
+
+def templates(hub: Path | None = None) -> dict[str, str]:
+    """Built-in templates plus the hub's own (.herdr-team/templates/*.md): id -> label.
+    A hub template with a built-in id replaces it; its label says so."""
+    out = dict(TEMPLATES)
+    mine = sorted(p.stem for p in user_template_dir(hub).glob("*.md") if TEMPLATE_ID_RE.match(p.stem)) if hub else []
+    for t in mine:
+        out[t] = f"custom · overrides {t}" if t in TEMPLATES else "custom"
+    if "blank" in out:
+        out["blank"] = out.pop("blank")   # blank stays last
+    return out
+
+
+def is_user_template(hub: Path | None, template: str) -> bool:
+    return bool(hub) and (user_template_dir(hub) / f"{template}.md").is_file()
+
+
+def template_path(template: str, hub: Path | None = None) -> Path:
+    """The hub's copy wins; a template that no longer exists falls back to blank."""
+    if is_user_template(hub, template):
+        return user_template_dir(hub) / f"{template}.md"
+    builtin = TEMPLATE_DIR / f"{template}.md"
+    return builtin if builtin.is_file() else TEMPLATE_DIR / "blank.md"
+
+
+def template_purpose(template: str, hub: Path | None = None) -> str:
+    """The template's default purpose sentence ({purpose: …}), or ''."""
+    m = PURPOSE_RE.search(_read(template_path(template, hub)))
+    return (m.group(1) or "").strip() if m else ""
 # '## Extra' to the end of the file belongs to the user (templates put it last), sub-headings and all.
 EXTRA_RE = re.compile(r"^## Extra[ \t]*(?:\n[\s\S]*)?\Z", re.M)
 EXTRA_BLOCK = "## Extra\n<!-- 이 봇에게만 줄 지침을 여기에 적는다. 템플릿을 다시 적용해도 이 절은 그대로 남는다. -->\n"
@@ -269,15 +317,16 @@ def bot_home(hub: Path, name: str) -> Path:
     return hub / ".herdr-team" / "bots" / name
 
 
-def render_soul(template: str, name: str, purpose: str) -> str:
-    text = (TEMPLATE_DIR / f"{template}.md").read_text(encoding="utf-8")
-    text = text.replace("{name}", name).replace("{purpose}", purpose.strip() or SOUL_PLACEHOLDER)
+def render_soul(template: str, name: str, purpose: str, hub: Path | None = None) -> str:
+    """An empty purpose takes the template's default sentence, else the placeholder."""
+    text = template_path(template, hub).read_text(encoding="utf-8").replace("{name}", name)
+    text = PURPOSE_RE.sub(lambda m: purpose.strip() or (m.group(1) or "").strip() or SOUL_PLACEHOLDER, text, count=1)
     return text if EXTRA_RE.search(text) else text.rstrip("\n") + "\n\n" + EXTRA_BLOCK
 
 
-def template_preview(template: str, n: int = 8) -> list[str]:
+def template_preview(template: str, n: int = 8, hub: Path | None = None) -> list[str]:
     """The template's own lines (sections and bullets), without title, purpose and Extra."""
-    body = EXTRA_RE.sub("", render_soul(template, "x", ""))
+    body = EXTRA_RE.sub("", render_soul(template, "x", "", hub))
     return [ln for ln in body.splitlines() if ln.startswith(("## ", "- "))][:n]
 
 
@@ -302,11 +351,11 @@ def set_soul_purpose(soul: str, purpose: str) -> str:
     return "\n\n".join(paras) + "\n"
 
 
-def apply_template(soul: str, template: str, name: str) -> str:
+def apply_template(soul: str, template: str, name: str, hub: Path | None = None) -> str:
     """Re-apply a template to an existing SOUL.md: keep its title, purpose and '## Extra' section;
     take every other section from the template."""
     soul = soul.replace("\r\n", "\n")
-    new = render_soul(template, name, soul_description(soul))
+    new = render_soul(template, name, soul_description(soul), hub)
     mine = EXTRA_RE.search(soul)
     if mine:
         new = EXTRA_RE.sub(lambda _: mine.group(0).rstrip("\n") + "\n", new, count=1)
@@ -316,7 +365,7 @@ def apply_template(soul: str, template: str, name: str) -> str:
 def team_problems(project: str, bots: list[Bot]) -> list[str]:
     """Everything that would stop the team from being saved, in words for the user."""
     problems = []
-    if not project or name_error(agent_name(project, "master")):
+    if not project or name_error(project) or name_error(agent_name(project, "master")):
         problems.append(f"Invalid project name: {project!r}")
     if not bots:
         problems.append("The team has no bots")
@@ -342,7 +391,7 @@ def ensure_home(hub: Path, bot: Bot, template: str | None = None) -> Path:
     home.mkdir(parents=True, exist_ok=True)
     soul = home / "SOUL.md"
     if not soul.exists():
-        soul.write_text(render_soul(template or default_template(bot.dirs), bot.name, bot.role),
+        soul.write_text(render_soul(template or default_template(bot.dirs), bot.name, bot.role, hub),
                         encoding="utf-8")
     memory = home / "MEMORY.md"
     if not memory.exists():
@@ -517,21 +566,15 @@ def repo_ref(hub: Path, repo: Path) -> str:
     return "." if repo == hub else f"./{repo.name}"
 
 
-def _readme_line(repo: Path) -> str:
-    for line in (repo / "README.md").read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if line and not line.startswith(("#", "![", "[![", "<")):
-            return line
-    return ""
 
 
 def guess_role(repo: Path) -> str:
-    """Best-effort one-line description of a repo, or ''."""
+    """The repo's package description (package.json, Cargo.toml, pyproject.toml), or ''.
+    README lines are not used: the first prose line is too often a link or a notice."""
     def toml_desc(name: str, table: str) -> str:
         return str(tomllib.loads((repo / name).read_text(encoding="utf-8"))[table]["description"])
 
     candidates = (
-        lambda: _readme_line(repo),
         lambda: str(json.loads((repo / "package.json").read_text(encoding="utf-8"))["description"]),
         lambda: toml_desc("Cargo.toml", "package"),
         lambda: toml_desc("pyproject.toml", "project"),
@@ -557,7 +600,7 @@ def draft_bots(hub: Path, existing: Team | None) -> list[tuple[Bot, bool]]:
             drafts.append((by_first[repo], True))
             used.add(by_first[repo].name)
         elif repo not in covered:  # a repo already watched by a multi-repo bot gets no bot of its own
-            drafts.append((Bot(slugify(repo.name), [repo_ref(hub, repo)], guess_role(repo)), existing is None))
+            drafts.append((Bot(slugify(repo.name, keep_case=True), [repo_ref(hub, repo)], guess_role(repo)), existing is None))
     drafts += [(b, True) for b in saved if b.name not in used]
     return drafts
 

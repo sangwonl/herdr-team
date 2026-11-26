@@ -1,6 +1,6 @@
 # {name}
 
-{purpose}
+{purpose: 이 리포를 책임지고 관리한다.}
 
 ## How I work
 - 내가 맡은 리포의 코드와 규칙(CLAUDE.md, README)을 기준으로 일한다. 요청받은 범위만 바꾼다.

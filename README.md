@@ -58,6 +58,8 @@ Board keys: `↑` `↓` (or `j` `k`) move · `Enter` jump to that agent's pane �
 Each bot's instructions come in three layers:
 
 1. **Template**: the defaults written into a new bot's `.herdr-team/bots/<bot>/SOUL.md`. Templates: `developer`, `frontend`, `backend`, `devops`, `qa`, `security`, `data`, `repo-owner`, `reviewer`, `writer`, `researcher`, `blank`.
+   Each template has a default purpose, used when you leave Purpose empty.
+   Your own templates go in `.herdr-team/templates/<id>.md` (`n` new, `c` copy, `e` edit, `d` delete in the template list). They use the same format: `# {name}`, then `{purpose: default purpose sentence}`, then `## How I work` and `## Never` bullets. A file with a built-in id replaces that template in this hub.
 2. **Team-wide**: `.herdr-team/instructions.md` goes to every bot and the master (`e` on setup's main screen). A file with only comments is ignored.
 3. **Per bot**: the `## Extra` section of `SOUL.md`. It is kept when you re-apply a template.
 

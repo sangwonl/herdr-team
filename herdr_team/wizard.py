@@ -11,14 +11,16 @@ import locale
 import os
 import shlex
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .board import LIGHT, color, init_colors, palette_index, put, safe_addstr
-from .core import (TEMPLATES, Bot, Team, Trigger, _read, agent_name, apply_template, bot_home, bot_name_error, clip,
+from .core import (TEMPLATE_ID_RE, TEMPLATE_SKELETON, TEMPLATES, Bot, Team, Trigger, _read, agent_name, apply_template, bot_home, bot_name_error, clip,
                    default_template, display_width, draft_bots, ensure_home, ensure_instructions, find_repos,
                    guess_role, load_team, name_error, parse_every, render_soul, repo_ref, resolve_repo, save_team,
-                   set_soul_purpose, slugify, soul_description, team_problems, template_preview, user_instructions)
+                   is_user_template, set_soul_purpose, slugify, soul_description, team_problems, template_path,
+                   template_preview, template_purpose, templates, user_instructions, user_template_dir)
 
 ENTER = ("\n", "\r", curses.KEY_ENTER)
 BACKSPACE = ("\x7f", "\b", curses.KEY_BACKSPACE)
@@ -33,6 +35,7 @@ class Draft:
     template: str | None     # SOUL.md template for a bot that has no home yet
     origin: str | None       # the home this bot was loaded from (to carry it along on a rename)
     reapply: str | None = None   # a template to re-apply to an existing SOUL.md (keeps title, purpose, Extra)
+    soul: str | None = None      # SOUL.md text edited (with e) before the bot has a home; written on save
 
 
 # ---- saving and summaries (no curses; tested in selftest) --------------------------
@@ -53,15 +56,20 @@ def commit(hub: Path, project: str, drafts: list[Draft], agent_args: list[str]) 
         new = bot_home(hub, d.bot.name)
         if d.origin and d.origin != d.bot.name:
             old = bot_home(hub, d.origin)
-            if old.is_dir() and not new.exists():
+            # A case-only rename (api -> Api) is the same folder on macOS: rename it in place.
+            if old.is_dir() and (not new.exists() or old.samefile(new)):
                 old.rename(new)
         existed = (new / "SOUL.md").exists()
+        if d.soul is not None and not has_home(hub, d):
+            new.mkdir(parents=True, exist_ok=True)
+            (new / "SOUL.md").write_text(d.soul, encoding="utf-8")
+            existed = True   # below: only the purpose line follows a purpose changed after editing
         ensure_home(hub, d.bot, d.template)
         if existed:
             before = _read(new / "SOUL.md")
             soul = before.replace("\r\n", "\n")
             if d.reapply:
-                soul = apply_template(soul, d.reapply, d.origin or d.bot.name)
+                soul = apply_template(soul, d.reapply, d.origin or d.bot.name, hub)
             if d.origin and d.origin != d.bot.name and soul.startswith(f"# {d.origin}\n"):
                 soul = f"# {d.bot.name}\n" + soul[len(f"# {d.origin}\n"):]
             if soul_description(soul) != d.bot.role.strip():
@@ -90,9 +98,21 @@ def soul_text(hub: Path, d: Draft) -> str:
     if has_home(hub, d):
         soul = _read(bot_home(hub, d.origin) / "SOUL.md")
         if d.reapply:
-            soul = apply_template(soul, d.reapply, d.bot.name)
+            soul = apply_template(soul, d.reapply, d.bot.name, hub)
         return soul if soul_description(soul) == d.bot.role.strip() else set_soul_purpose(soul, d.bot.role)
-    return render_soul(d.template or default_template(d.bot.dirs), d.bot.name, d.bot.role)
+    if d.soul is not None:
+        return d.soul if soul_description(d.soul) == d.bot.role.strip() else set_soul_purpose(d.soul, d.bot.role)
+    return render_soul(d.template or default_template(d.bot.dirs), d.bot.name, d.bot.role, hub)
+
+
+def is_default_purpose(hub: Path, role: str) -> bool:
+    """Empty, or still some template's default sentence: safe to replace when the template changes."""
+    return not role.strip() or role.strip() in {template_purpose(t, hub) for t in templates(hub)}
+
+
+def default_purpose(hub: Path, role: str, template: str) -> str:
+    """The purpose to show after picking a template: the user's own words stay, a default follows the template."""
+    return template_purpose(template, hub) if is_default_purpose(hub, role) else role
 
 
 def bot_preview(hub: Path, d: Draft) -> list[list]:
@@ -106,7 +126,8 @@ def bot_preview(hub: Path, d: Draft) -> list[list]:
         kind = [(f"will re-apply the {d.reapply} template (Extra kept)", "warn")] if d.reapply else [("SOUL.md", ""), ("  e open in editor", "dim")]
     else:
         t = d.template or default_template(b.dirs)
-        kind = [(t, ""), (f"  {TEMPLATES.get(t, '')}", "dim")]
+        kind = [(f"{t} (edited)", "warn"), ("  e open in editor", "dim")] if d.soul is not None else \
+            [(t, ""), (f"  {templates(hub).get(t, '')}", "dim")]
     rows.append([("Instructions  ", "dim"), *kind])
     trig = [f"{t.name} · {t.every}" for t in b.triggers] or ["none"]
     rows.append([("Triggers      ", "dim"), (trig[0], "")])
@@ -149,7 +170,8 @@ def change_summary(existing: Team | None, project: str, drafts: list[Draft], tou
     for d in drafts:
         if d.origin is None or d.origin not in old:
             rows.append([("+ ", "ok"), (d.bot.name, f"bot:{d.bot.name}"),
-                         (f"  new bot · {where(d.bot.dirs)} · {d.template or default_template(d.bot.dirs)} template", "")])
+                         (f"  new bot · {where(d.bot.dirs)} · {d.template or default_template(d.bot.dirs)} template"
+                          f"{' (edited)' if d.soul is not None else ''}", "")])
         else:
             changes = _changes(old[d.origin], d, touched)
             if changes:
@@ -270,27 +292,44 @@ def chrome(win, ui: Ui, crumb: str, hints: list[tuple[str, str]], progress=None)
         bottom = h - 5
     safe_addstr(win, h - 2, 0, LIGHT[4] * w, color("dim"))
     x = 1
-    for key, label in hints:
-        x = put(win, h - 1, x, key, color("accent", curses.A_BOLD))
-        x = put(win, h - 1, x, f" {label}   ", color("dim"))
+    for k, (key, label) in enumerate(hints):
+        x = put(win, h - 1, x + (3 if k else 0), key, color("accent", curses.A_BOLD))
+        x = put(win, h - 1, x, f" {label}", color("dim"))
     return 3, bottom
+
+
+def _skip(row: list) -> bool:
+    """Separators ([]) and hint lines (first segment styled "hint") take no cursor."""
+    return not row or row[0][1] == "hint"
+
+
+def hint_row(indent: int, keys: list[tuple[str, str]]) -> list:
+    """A key-hint line under a value: keys in accent, labels dim. The cursor skips it."""
+    row = [(" " * indent, "hint")]
+    for k, (key, label) in enumerate(keys):
+        row += [(("   " if k else "") + key, "accent"), (f" {label}", "dim")]
+    return row
 
 
 def _move(rows: list, cur: int, d: int) -> int:
     i = cur + d
-    while 0 <= i < len(rows) and not rows[i]:
+    while 0 <= i < len(rows) and _skip(rows[i]):
         i += d
     return i if 0 <= i < len(rows) else cur
 
 
 def select(win, ui: Ui, crumb: str, title: str, rows: list[list], hints: list[tuple[str, str]], keys: str = "",
-           cur: int = 0, preview=None, checked: list[bool] | None = None, message: str = "", progress=None) -> tuple[str, int]:
+           cur: int = 0, preview=None, checked: list[bool] | None = None, message: str = "", progress=None,
+           note: str = "") -> tuple[str, int]:
     """A list in a panel, with an optional preview panel (right, or below on narrow screens).
     rows: [] is a separator the cursor skips. preview(cur) -> (title, rows).
     Returns (key, cursor): key is "enter", "esc" or one of `keys`. With `checked`, Space toggles."""
     curses.curs_set(0)
+    # A new screen: repaint everything once. curses' line diff can leave stale cells next to
+    # clipped wide (Korean) text on some terminals.
+    win.clear()
     top = 0
-    if rows and not rows[cur]:
+    if rows and _skip(rows[cur]):
         cur = _move(rows, cur, 1)
     while True:
         if not too_small(win):
@@ -325,6 +364,8 @@ def select(win, ui: Ui, crumb: str, title: str, rows: list[list], hints: list[tu
                     draw_row(win, ui, py + 1 + i, px + 2, pwid - 4, row)
             if message:
                 safe_addstr(win, h - 3, 2, clip("✗ " + message, w - 4), attr(ui, "bad"))
+            elif note:   # stays on screen; an error message takes its place for one keypress
+                safe_addstr(win, h - 3, 2, clip(note, w - 4), attr(ui, "accent"))
         win.refresh()
         key = win.get_wch()
         message = ""
@@ -547,20 +588,82 @@ def edit_triggers(win, ui: Ui, crumb: str, bot: Bot) -> None:
 
 
 def pick_template(win, ui: Ui, crumb: str, name: str, current: str, progress=None) -> str | None:
-    ids = list(TEMPLATES)
-    rows = [[(clip(t, 12) + " ", "bold"), (TEMPLATES[t] if TEMPLATES[t] != t else "", "dim")] for t in ids]
-
-    def preview(i):
-        lines = []
-        for ln in template_preview(ids[i], 14):
-            lines += [[]] if ln.startswith("## ") and lines else []
-            lines.append([(ln, "bold" if ln.startswith("## ") else "")])
-        return f"{ids[i]} template", lines + [[], [("## Extra — this bot's own instructions; add them with e after saving.", "dim")]]
+    """Choose a template. n / c / e / d add, duplicate, edit and delete the hub's own templates
+    (.herdr-team/templates); those files are written right away, apart from saving the team."""
     first = not progress or progress[0] == 0
-    key, cur = select(win, ui, crumb, f"Template for {name}", rows,
-                      [("Enter", "select"), ("Esc", "cancel" if first else "back")],
-                      cur=ids.index(current) if current in ids else 0, preview=preview, progress=progress)
-    return None if key == "esc" else ids[cur]
+    message = ""
+    while True:
+        labels = templates(ui.hub)
+        ids = list(labels)
+        rows = [[(clip(t, 12) + " ", "bold"),
+                 (labels[t] if labels[t] != t else "", "accent" if is_user_template(ui.hub, t) else "dim")] for t in ids]
+
+        def preview(i):
+            purpose = template_purpose(ids[i], ui.hub)
+            lines = [[(purpose, "")] if purpose else [("(no default purpose)", "dim")], []]
+            for ln in template_preview(ids[i], 14, ui.hub):
+                lines += [[]] if ln.startswith("## ") and len(lines) > 2 else []
+                lines.append([(ln, "bold" if ln.startswith("## ") else "")])
+            note = ("Your file, saved now; kept if you quit setup." if is_user_template(ui.hub, ids[i])
+                    else "Built in, read-only. c makes your copy.")
+            return f"{ids[i]} template", lines + [[], [(note, "dim")]]
+        key, cur = select(win, ui, crumb, f"Template for {name}", rows,
+                          [("Enter", "select"), ("Esc", "cancel" if first else "back"),
+                           ("n", "new"), ("c", "copy"), ("e", "edit"), ("d", "delete")],
+                          keys="ncde", cur=ids.index(current) if current in ids else 0, preview=preview,
+                          progress=progress, message=message)
+        message, current = "", ids[cur]
+        if key == "esc":
+            return None
+        if key == "enter":
+            return current
+        if key in ("n", "c"):
+            new = template_id_input(win, ui, crumb, f"{current}-copy" if key == "c" else "")
+            if new:
+                path = user_template_dir(ui.hub) / f"{new}.md"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(_read(template_path(current, ui.hub)) if key == "c" else TEMPLATE_SKELETON, encoding="utf-8")
+                message, current = open_editor(win, path), new
+        elif not is_user_template(ui.hub, current):
+            message = "Built-in templates are read-only — c duplicates it"
+        elif key == "e":
+            message = open_editor(win, user_template_dir(ui.hub) / f"{current}.md")
+        elif confirm_in(win, ui, crumb, f"Delete your template {current}? Saved bots keep their SOUL.md."
+                        + (" The built-in one comes back." if current in TEMPLATES else "")):
+            (user_template_dir(ui.hub) / f"{current}.md").unlink()
+
+
+def template_id_input(win, ui: Ui, crumb: str, value: str) -> str | None:
+    """Ask for a new template id. A built-in id overrides that template in this hub (after a confirm)."""
+    def check(v):
+        if not TEMPLATE_ID_RE.match(v):
+            return "Use a-z, 0-9, - and _; start with a letter or digit"
+        if is_user_template(ui.hub, v):
+            return f"You already have a template named {v}"
+        return None
+    got = input_line(win, ui, crumb + " / new template", "Template id (its file name in .herdr-team/templates)", value,
+                     check, note="A built-in id (e.g. developer) overrides that template in this hub.")
+    if got and got in TEMPLATES and not confirm_in(win, ui, crumb, f"{got} is a built-in template. Override it in this hub?"):
+        return None
+    return got
+
+
+def edit_new_soul(win, ui: Ui, d: Draft) -> str:
+    """Open a not-yet-saved bot's SOUL.md in the editor: the edited text if any, else the template.
+    The text lives in the draft until the team is saved; the temp file is removed right away."""
+    with tempfile.NamedTemporaryFile("w", suffix=".md", prefix="SOUL-", delete=False, encoding="utf-8") as f:
+        f.write(soul_text(ui.hub, d))
+    path = Path(f.name)
+    try:
+        error = open_editor(win, path)
+        text = _read(path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not error and text != soul_text(ui.hub, d):
+        d.soul = text
+        d.bot.role = soul_description(text)   # a purpose typed in the editor wins over the Purpose row
+        ui.dirty = True
+    return error
 
 
 def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched: set[str]) -> Draft | None:
@@ -573,20 +676,24 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
         if home and d.reapply:
             soul = [(f"will re-apply the {d.reapply} template", "warn")]
         elif home:
-            soul = [("SOUL.md", ""), ("  e open in editor · Enter re-apply a template", "dim")]
+            soul = [("SOUL.md", "")]
         else:
             t = d.template or default_template(bot.dirs)
-            soul = [(t, ""), (f"  {TEMPLATES.get(t, '')}", "dim")]
-        rows = [
-            [("Name          ", "dim"), (bot.name, f"bot:{bot.name}")],
-            [("Folders       ", "dim"), (where(bot.dirs), "")],
-            [("Purpose       ", "dim"), (bot.role, "")] if bot.role else [("Purpose       ", "dim"), ("(add one sentence)", "warn")],
-            [("Instructions  ", "dim"), *soul],
-            [("Triggers      ", "dim"), (f"{len(bot.triggers)}", ""),
-             (f"  {', '.join(t.name for t in bot.triggers)}" if bot.triggers else "", "dim")],
-            [],
-            [("✓ done", "ok")],
+            soul = [(f"{t} (edited)" if d.soul is not None else t, "")]
+        # (kind, row): Enter acts on the kind, so hint lines can sit between rows without shifting anything.
+        items = [
+            ("name", [("Name          ", "dim"), (bot.name, f"bot:{bot.name}")]),
+            ("folders", [("Folders       ", "dim"), (where(bot.dirs), "")]),
+            ("purpose", [("Purpose       ", "dim"), (bot.role, "")] if bot.role else [("Purpose       ", "dim"), ("(add one sentence)", "warn")]),
+            ("soul", [("Instructions  ", "dim"), *soul]),
+            # Short enough for 50 columns: 32 cells right of the indent.
+            ("", hint_row(14, [("e", "edit"), ("Enter", "re-apply template" if home else "change template")])),
+            ("triggers", [("Triggers      ", "dim"), (f"{len(bot.triggers)}", ""),
+                          (f"  {', '.join(t.name for t in bot.triggers)}" if bot.triggers else "", "dim")]),
+            ("", []),
+            ("done", [("✓ done", "ok")]),
         ]
+        kinds, rows = [k for k, _ in items], [r for _, r in items]
         crumb = f"team / {bot.name or 'new bot'}"
         key, cur = select(win, ui, crumb, "Edit bot", rows,
                           [("Enter", "edit"), ("e", "open in editor"), ("s", "done"), ("Esc", "cancel")],
@@ -594,15 +701,16 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
         message = ""
         if key == "esc":
             return None
-        if key == "s" or (key == "enter" and cur == 6):
+        kind = kinds[cur]
+        if key == "s" or (key == "enter" and kind == "done"):
             err = bot_name_error(project, bot.name, others)
             if err:
-                cur, message = 0, err
+                cur, message = kinds.index("name"), err
                 continue
             return d
         if key == "e":
             if not home:
-                message = "A new bot gets its SOUL.md when you save. Use the preview for now."
+                message = edit_new_soul(win, ui, d)
             else:
                 message = open_editor(win, bot_home(ui.hub, d.origin) / "SOUL.md")
                 touched.add(d.origin)
@@ -610,29 +718,31 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
             continue
         if key != "enter":
             continue
-        if cur == 0:
+        if kind == "name":
             got = input_line(win, ui, crumb + " / name", "Bot name (the agent is named <project>-<bot>)", bot.name,
                              lambda v: bot_name_error(project, v, others))
             if got is not None:
                 bot.name = got
-        elif cur == 1:
+        elif kind == "folders":
             got = edit_folders(win, ui, crumb + " / folders", bot.name, bot.dirs)
             if got is not None:
                 bot.dirs = got
-        elif cur == 2:
+        elif kind == "purpose":
             got = input_line(win, ui, crumb + " / purpose", "What is this bot for? (one sentence; it opens SOUL.md)", bot.role)
             if got is not None:
                 bot.role = got
-        elif cur == 3 and not home:
+        elif kind == "soul" and not home:
             got = pick_template(win, ui, crumb + " / template", bot.name, d.template or default_template(bot.dirs))
-            if got is not None:
-                d.template = got
-        elif cur == 3:
+            if got is not None and (d.soul is None or confirm_in(
+                    win, ui, crumb, f"Discard your edits to SOUL.md and start over from the {got} template?")):
+                d.template, d.soul = got, None
+                bot.role = default_purpose(ui.hub, bot.role, got)
+        elif kind == "soul":
             got = pick_template(win, ui, crumb + " / re-apply template", bot.name, d.reapply or default_template(bot.dirs))
             if got is not None and confirm_in(win, ui, crumb, f"Replace the template part of SOUL.md (How I work, Never) with the {got} "
                                                               "template? The title, purpose and ## Extra stay."):
                 d.reapply = got
-        elif cur == 4:
+        elif kind == "triggers":
             edit_triggers(win, ui, crumb, bot)
 
 
@@ -655,7 +765,8 @@ def new_bot(win, ui: Ui, project: str, others: list[str]) -> Draft | None:
     def role_step(vals, i):
         guess = guess_role(resolve_repo(ui.hub, vals[1][0])) if vals[1] else ""
         shown = [vals[0], where(vals[1]), vals[2], None]
-        return input_line(win, ui, crumb, "What is this bot for? (one sentence; shown in the roster and on the board)", vals[3] or guess,
+        value = vals[3] if vals[3] and not is_default_purpose(ui.hub, vals[3]) else guess or template_purpose(vals[2], ui.hub)
+        return input_line(win, ui, crumb, "What is this bot for? (one sentence; shown in the roster and on the board)", value,
                           note="Leave it empty to fill in later.", progress=(i, names, shown))
     got = run_steps([name_step, dirs_step, template_step, role_step])
     return Draft(Bot(got[0], got[1], got[3]), got[2], None) if got else None
@@ -685,14 +796,15 @@ def team_screen(win, hub: Path) -> Saved | None:
         drafts = [Draft(b, None, b.name) for b in existing.bots]
     else:   # first run: one bot per repo found, ready to edit or remove
         drafts = [Draft(b, None, None) for b, on in draft_bots(hub, None) if on]
+        for d in drafts:   # no package description: the template's default purpose, editable
+            d.bot.role = d.bot.role or template_purpose(default_template(d.bot.dirs), hub)
+    suggested = existing is None   # first run: the bots are only suggestions until saved
     agent_args = existing.agent_args if existing else []
     ui = Ui(hub, project, dirty=existing is None)
     instructions_path = hub / ".herdr-team" / "instructions.md"
     instructions_before = user_instructions(hub)
     touched: set[str] = set()
     cur, message = 3, ""
-    if not drafts:
-        message = "No repos found. Press n to add a bot (a bot with no repo works too)."
     first = 3   # rows: project, team instructions, separator, bots..., add, separator, save
     while True:
         ui.project, ui.names = project, [d.bot.name for d in drafts]
@@ -710,7 +822,8 @@ def team_screen(win, hub: Path) -> Saved | None:
 
         def preview(i):
             if first <= i < add_row:
-                return "Preview", bot_preview(hub, drafts[i - first])
+                body = bot_preview(hub, drafts[i - first])   # name, purpose, then details: the hint goes high
+                return "Preview", body[:2] + [[("Enter edit (name, folders, purpose) · d remove", "dim")]] + body[2:]
             if i == 0:
                 return "Project", [[("Agent names    ", "dim"), (agent_name(project, "master"), "")],
                                     [("               ", ""), (agent_name(project, "<bot>"), "")],
@@ -724,9 +837,12 @@ def team_screen(win, hub: Path) -> Saved | None:
                           [("Per-bot instructions: template + ## Extra in SOUL.md.", "dim")],
                           [("Instructions for everyone: Instructions row above.", "dim")]]
         key, cur = select(win, ui, "team", "Team", rows,
-                          [("Enter", "edit"), ("n", "add"), ("d", "remove"), ("e", "instructions"),
-                           ("s", "save"), ("Esc", "quit")],
-                          keys="ndse", cur=cur, preview=preview, message=message)
+                          # Most-needed keys first: a narrow footer cuts from the right.
+                          [("Enter", "edit"), ("d", "remove"), ("n", "add"), ("s", "save"), ("Esc", "quit"),
+                           ("e", "instructions")],
+                          keys="ndse", cur=cur, preview=preview, message=message,
+                          note="Suggested bots — d remove · Enter edit · n add" if suggested and drafts
+                          else "" if drafts else "No bots yet. Press n to add one (a bot needs no repo).")
         message = ""
         names = [d.bot.name for d in drafts]
         if key == "esc":
@@ -761,7 +877,7 @@ def team_screen(win, hub: Path) -> Saved | None:
                 ui.dirty = True
         elif key == "enter" and cur == 0:
             got = input_line(win, ui, "team / project", "Project name (prefix of every agent name)", project,
-                             lambda v: name_error(agent_name(v, "master")) if v else "Name is empty")
+                             lambda v: (name_error(v) or name_error(agent_name(v, "master"))) if v else "Name is empty")
             if got and got != project:
                 project, ui.dirty = got, True
         elif key == "enter" and first <= cur < add_row:

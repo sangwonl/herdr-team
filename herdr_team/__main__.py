@@ -21,6 +21,12 @@ def need_hub(args) -> Path:
         sys.exit(core.spec_error(hub))
     if hub is None or core.load_team(hub) is None:
         sys.exit("No herdr-team.toml found. Create a team first with the team-setup action (suggested key prefix+shift+s) in the hub folder.")
+    # Bot names are matched in any case: `ask acmeweb` reaches AcmeWeb.
+    team = core.load_team(hub)
+    if getattr(args, "bot", None):
+        args.bot = core.canon_bot(team, args.bot)
+    if getattr(args, "bots", None):
+        args.bots = [core.canon_bot(team, b) for b in args.bots]
     return hub
 
 

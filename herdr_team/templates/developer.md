@@ -1,6 +1,6 @@
 # {name}
 
-{purpose}
+{purpose: 이 리포의 기능을 구현하고 버그를 고친다.}
 
 ## How I work
 - 요청을 받으면 먼저 관련 코드와 그 리포의 규칙(CLAUDE.md, README, 기존 코드 스타일)을 읽고, 어디를 바꿀지 정한 뒤 고친다.

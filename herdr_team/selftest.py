@@ -20,7 +20,12 @@ def test_slugify():
     assert slugify("TileServer") == "tileserver"
     assert slugify("AcmeWeb_SDK") == "acmeweb_sdk"
     assert slugify("my repo.v2") == "my-repo-v2"
-    assert slugify("3d-tiles") == "d-tiles"
+    assert slugify("3d-tiles") == "d-tiles"                       # project names start with a letter
+    # 봇 이름: 폴더 대소문자 유지, 숫자 시작 허용
+    assert slugify("TileServer", keep_case=True) == "TileServer"
+    assert slugify("my repo.v2", keep_case=True) == "my-repo-v2"
+    assert slugify("3d-tiles", keep_case=True) == "3d-tiles"
+    assert slugify("_AcmeWeb", keep_case=True) == "AcmeWeb"
     assert slugify("한글") == ""
 
 
@@ -30,6 +35,7 @@ def test_name_error():
     assert name_error("a" * 33) is not None
     assert name_error("") is not None
     assert agent_name("acme", "tilebridge") == "acme-tilebridge"
+    assert agent_name("acme", "AcmeWeb") == "acme-acmeweb" and name_error(agent_name("acme", "3d-tiles")) is None
 
 
 def test_team_roundtrip():
@@ -40,6 +46,8 @@ def test_team_roundtrip():
                                   Bot("abs", ["/tmp/x"], ""), Bot("scout", [], "조사 담당")],
                     ["--permission-mode", "acceptEdits"], hub)
         save_team(team)
+        from .core import template_purpose
+        team.bots[1].role = template_purpose("developer")     # 빈 목적은 템플릿 기본 문장으로 저장된다
         assert load_team(hub) == team
         assert load_team(hub.parent) is None
         assert find_hub(hub) == hub
@@ -128,11 +136,14 @@ def test_wizard_pure():
         (hub / "TileServer" / "README.md").write_text("# TileServer\n\n![badge](x)\n\n타일 변환 파이프라인.\n더 긴 설명\n")
         (hub / "web sdk" / "package.json").write_text('{"description": "Web SDK"}')
         assert [p.name for p in find_repos(hub)] == ["TileServer", "web sdk"]
-        assert guess_role(hub / "TileServer") == "타일 변환 파이프라인."
+        assert guess_role(hub / "TileServer") == ""                  # README 는 쓰지 않는다
+        (hub / "TileServer" / "Cargo.toml").write_text('[package]\nname = "ts"\ndescription = "Tile server"\n')
+        assert guess_role(hub / "TileServer") == "Tile server"
+        (hub / "TileServer" / "Cargo.toml").unlink()
         assert guess_role(hub / "web sdk") == "Web SDK"
         assert guess_role(hub / "notrepo") == ""
         drafts = draft_bots(hub, None)
-        assert [(b.name, b.dirs, on) for b, on in drafts] == [("tileserver", ["./TileServer"], True), ("web-sdk", ["./web sdk"], True)]
+        assert [(b.name, b.dirs, on) for b, on in drafts] == [("TileServer", ["./TileServer"], True), ("web-sdk", ["./web sdk"], True)]
         old = Team("p", [Bot("tb", ["./TileServer"], "내가 쓴 역할"), Bot("ext", ["/abs/other"], "외부"), Bot("free", [], "자유")], [], hub)
         drafts = draft_bots(hub, old)
         assert [(b.name, b.role, on) for b, on in drafts] == [("tb", "내가 쓴 역할", True), ("web-sdk", "Web SDK", False), ("ext", "외부", True), ("free", "자유", True)]
@@ -288,6 +299,11 @@ def test_review_fixes():
     assert bot_name_error("p", "tb", ["tb"]) is not None
     assert bot_name_error("p", "", []) is not None
     assert bot_name_error("p", "tb", ["web"]) is None
+    # 대문자·숫자 시작 허용, 중복과 예약어는 대소문자 무시, 32자 제한은 소문자 project-bot 기준
+    assert bot_name_error("p", "AcmeWeb", ["web"]) is None and bot_name_error("p", "3d-tiles", []) is None
+    assert bot_name_error("p", "Api", ["api"]) is not None and bot_name_error("p", "Master", []) is not None
+    assert bot_name_error("p", "a.b", []) is not None
+    assert bot_name_error("p", "A" * 30, []) is None and bot_name_error("p", "A" * 31, []) is not None
     assert classify({"seq": 1}, {"agent_status": "unknown", "state_change_seq": 2}, True) == "reported"
 
 def test_v2_model():
@@ -546,7 +562,7 @@ def test_hub_without_sub_repos():
         (hub / ".git").mkdir()
         (hub / "README.md").write_text("# solo\n\n혼자 있는 리포\n")
         assert find_repos(hub) == [hub]
-        assert [(b.name, b.dirs, b.role, on) for b, on in draft_bots(hub, None)] == [("solo", ["."], "혼자 있는 리포", True)]
+        assert [(b.name, b.dirs, b.role, on) for b, on in draft_bots(hub, None)] == [("solo", ["."], "", True)]
         (hub / "sub").mkdir()
         (hub / "sub" / ".git").mkdir()
         assert find_repos(hub) == [hub, hub / "sub"]
@@ -726,6 +742,94 @@ esac
         assert not any(l.startswith(("pane run", "agent start")) for l in lines), lines
         assert "master\tstarts in this pane when this command exits" in out.getvalue()
         assert "a\tskipped: w1:p2 is running vim; quit it, then run team-up again" in out.getvalue()
+
+
+def test_bot_name_case():
+    from .core import canon_bot
+    from .wizard import Draft, commit
+    with tempfile.TemporaryDirectory() as d:
+        hub = Path(d).resolve()
+        # 이미 있는 소문자 toml 은 그대로 읽힌다
+        save_team(Team("p", [Bot("api", [], ""), Bot("web", [], "")], [], hub))
+        team = load_team(hub)
+        assert [b.name for b in team.bots] == ["api", "web"]
+        assert canon_bot(team, "API") == "api" and canon_bot(team, "nobody") == "nobody" and canon_bot(team, "master") == "master"
+        # 대소문자 유지 이름은 저장·로드되고, 대소문자만 다른 두 봇은 거부된다
+        save_team(Team("p", [Bot("AcmeWeb", [], ""), Bot("3d-tiles", [], "")], [], hub))
+        assert [b.name for b in load_team(hub).bots] == ["AcmeWeb", "3d-tiles"]
+        (hub / "herdr-team.toml").write_text('name = "p"\n[[bots]]\nname = "Api"\n[[bots]]\nname = "api"\n')
+        assert load_team(hub) is None
+        (hub / "herdr-team.toml").write_text('name = "P"\n[[bots]]\nname = "api"\n')
+        assert load_team(hub) is None                                   # 프로젝트 이름은 소문자 slug
+        # 대소문자만 바꾸는 이름 변경(api -> Api): 홈 폴더가 그 이름으로 옮겨지고 내용이 남는다
+        save_team(Team("p", [Bot("api", [], "")], [], hub))
+        commit(hub, "p", [Draft(Bot("api", [], ""), "blank", None)], [])
+        (hub / ".herdr-team" / "bots" / "api" / "MEMORY.md").write_text("keep")
+        commit(hub, "p", [Draft(Bot("Api", [], ""), None, "api")], [])
+        homes = os.listdir(hub / ".herdr-team" / "bots")
+        assert "Api" in homes and "api" not in homes, homes   # listdir shows the real case
+        assert (hub / ".herdr-team" / "bots" / "Api" / "MEMORY.md").read_text() == "keep"
+        assert (hub / ".herdr-team" / "bots" / "Api" / "SOUL.md").read_text().startswith("# Api\n")
+
+
+def test_new_bot_edited_soul():
+    # 저장 전 새 봇에서 e 로 고친 SOUL.md 는 commit 때 템플릿 대신 그대로 쓰인다
+    from .core import render_soul, soul_description
+    from .wizard import Draft, commit, soul_text
+    with tempfile.TemporaryDirectory() as d:
+        hub = Path(d).resolve()
+        mine = render_soul("developer", "api", "REST API") + "\n- 배포 전에 마이그레이션을 확인한다.\n"
+        draft = Draft(Bot("api", [], "REST API"), "developer", None, soul=mine)
+        assert soul_text(hub, draft) == mine                          # 미리보기도 고친 글
+        commit(hub, "p", [draft, Draft(Bot("web", [], "웹"), "frontend", None)], [])
+        soul = (hub / ".herdr-team" / "bots" / "api" / "SOUL.md").read_text()
+        assert soul == mine and soul_description(soul) == "REST API"
+        assert (hub / ".herdr-team" / "bots" / "api" / "MEMORY.md").exists()
+        assert "마이그레이션" not in (hub / ".herdr-team" / "bots" / "web" / "SOUL.md").read_text()
+        # 고친 뒤 목적만 바꾸면 목적 줄만 따라 바뀌고, 사용자가 쓴 줄은 남는다
+        draft = Draft(Bot("db", [], "새 목적"), "developer", None, soul=mine.replace("# api", "# db"))
+        commit(hub, "p", [draft], [])
+        soul = (hub / ".herdr-team" / "bots" / "db" / "SOUL.md").read_text()
+        assert soul_description(soul) == "새 목적" and "마이그레이션" in soul
+
+
+def test_templates_purpose_and_custom():
+    from .core import (SOUL_PLACEHOLDER, render_soul, soul_description, template_path, template_purpose,
+                       template_preview, templates, user_template_dir)
+    from .wizard import default_purpose, is_default_purpose
+    # 1. 기본 목적: 비었으면 템플릿 문장, 쓰면 그 문장, blank 는 자리표시
+    dev = template_purpose("developer")
+    assert dev == "이 리포의 기능을 구현하고 버그를 고친다."
+    assert soul_description(render_soul("developer", "a", "")) == dev
+    assert soul_description(render_soul("developer", "a", "내 목적")) == "내 목적"
+    assert template_purpose("blank") == "" and SOUL_PLACEHOLDER in render_soul("blank", "a", "")
+    assert all(template_purpose(t) for t in templates() if t != "blank")       # 기본 템플릿마다 문장이 있다
+    with tempfile.TemporaryDirectory() as d:
+        hub = Path(d).resolve()
+        mine = user_template_dir(hub)
+        mine.mkdir(parents=True)
+        # 2. 옛 형식 {purpose} 는 기본값 없이 읽힌다
+        (mine / "old.md").write_text("# {name}\n\n{purpose}\n\n## How I work\n- 옛 형식\n")
+        assert template_purpose("old", hub) == "" and SOUL_PLACEHOLDER in render_soul("old", "a", "", hub)
+        assert soul_description(render_soul("old", "a", "목적", hub)) == "목적"
+        # 3. 사용자 템플릿: 목록 끝(blank 앞)에 붙고, 같은 id 면 기본 것을 이긴다
+        (mine / "developer.md").write_text("# {name}\n\n{purpose: 우리 방식 개발}\n\n## How I work\n- 우리 규칙\n")
+        labels = templates(hub)
+        assert labels["old"] == "custom" and labels["developer"].startswith("custom") and list(labels)[-1] == "blank"
+        assert template_path("developer", hub) == mine / "developer.md" and template_purpose("developer", hub) == "우리 방식 개발"
+        assert template_preview("developer", hub=hub) == ["## How I work", "- 우리 규칙"]
+        assert template_purpose("developer") == dev                              # 허브 없이는 기본 것
+        assert "우리 규칙" in render_soul("developer", "a", "", hub)
+        # 4. 복제(c): 원본 파일 내용 그대로 새 id 로
+        (mine / "dev2.md").write_text(template_path("reviewer", hub).read_text())
+        assert template_purpose("dev2", hub) == template_purpose("reviewer")
+        # 지워진 템플릿을 쓰던 초안은 blank 로 그려진다
+        assert SOUL_PLACEHOLDER in render_soul("gone", "a", "", hub)
+        # 기본 문장인 목적만 템플릿을 따라 바뀐다
+        assert default_purpose(hub, "", "reviewer") == template_purpose("reviewer")
+        assert default_purpose(hub, template_purpose("qa"), "reviewer") == template_purpose("reviewer")
+        assert default_purpose(hub, "내가 쓴 목적", "reviewer") == "내가 쓴 목적"
+        assert is_default_purpose(hub, "우리 방식 개발") and not is_default_purpose(hub, "내가 쓴 목적")
 
 
 def test_python_version_check():
