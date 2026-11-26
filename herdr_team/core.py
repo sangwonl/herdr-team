@@ -82,6 +82,14 @@ class Team:
     bots: list[Bot]
     agent_args: list[str] = field(default_factory=list)
     hub: Path = Path(".")
+    collaborators: list["Collaborator"] = field(default_factory=list)
+
+
+@dataclass
+class Collaborator:
+    """Another team this one works with ([[collaborators]]). Linked only when that team lists us back."""
+    name: str   # the other hub's project name
+    hub: Path   # absolute path of the other hub
 
 
 def _q(s: str) -> str:
@@ -97,6 +105,8 @@ def dump_team(team: Team) -> str:
         for t in b.triggers:
             out += ["", "[[bots.triggers]]", f"name = {_q(t.name)}", f"every = {_q(t.every)}",
                     f"run = {_q(t.run)}", f"prompt = {_q(t.prompt)}"]
+    for c in team.collaborators:
+        out += ["", "[[collaborators]]", f"name = {_q(c.name)}", f"hub = {_q(str(c.hub))}"]
     return "\n".join(out) + "\n"
 
 
@@ -158,7 +168,56 @@ def _parse_team(hub: Path) -> Team:
         soul = _read(bot_home(hub, name) / "SOUL.md")
         role = soul_description(soul) if soul else str(b.get("role", ""))  # `role` is the v1 key
         bots.append(Bot(name, dirs, role, triggers))
-    return Team(project, bots, strings(data.get("agent_args", []), "agent_args"), hub)
+    collaborators = []
+    raw = data.get("collaborators", [])
+    if not isinstance(raw, list) or not all(isinstance(c, dict) for c in raw):
+        raise ValueError("invalid collaborators entry")
+    for c in raw:
+        name, other = c.get("name"), c.get("hub")
+        if not isinstance(name, str) or name_error(name) or name == project or name in [x.name for x in collaborators]:
+            raise ValueError(f"invalid collaborator name: {name!r} (the other team's project name, once each)")
+        if not isinstance(other, str) or not Path(other).expanduser().is_absolute():
+            raise ValueError(f"collaborator {name}: hub must be an absolute path")
+        collaborators.append(Collaborator(name, Path(other).expanduser()))
+    return Team(project, bots, strings(data.get("agent_args", []), "agent_args"), hub, collaborators)
+
+
+def collaborator_links(team: Team) -> list[tuple[Collaborator, "Team | None", str]]:
+    """Each [[collaborators]] entry with its team when linked both ways, else None and the reason."""
+    out = []
+    for c in team.collaborators:
+        other = load_team(c.hub)
+        if other is None:
+            out.append((c, None, f"can't read {c.hub / SPEC_FILE}"))
+        elif other.name != c.name:
+            out.append((c, None, f"the team at {c.hub} is named {other.name}, not {c.name}"))
+        elif not any(b.name == team.name and b.hub.resolve() == team.hub.resolve() for b in other.collaborators):
+            out.append((c, None, f"not linked back (add this team to {c.name}'s collaborators)"))
+        else:
+            out.append((c, other, ""))
+    return out
+
+
+def linked_teams(team: Team) -> dict[str, "Team"]:
+    return {c.name: other for c, other, _ in collaborator_links(team) if other}
+
+
+def collaborators_block(team: Team) -> list[str]:
+    """For the agents' prompts: linked teams, where their context lives, and the shared-repo rule."""
+    linked = linked_teams(team)
+    if not linked:
+        return []
+    lines = ["## 연결된 팀", ""]
+    for name, other in linked.items():
+        bots = ", ".join(b.name for b in other.bots)
+        lines.append(f"- {name}: 허브 {other.hub}, 봇 {bots}. 팀 맥락 {other.hub / '.herdr-team' / 'context.md'} — 일을 시작하기 전에 읽는다.")
+    lines += [
+        '- 상대 팀에 묻기: `herdr-team question <팀>/<봇|master> "<질문>"`. 명단과 상태: `herdr-team roster`.',
+        "- 일을 맡기는 것(ask)은 자기 팀 안에서만 한다. 상대 팀에 필요한 일은 그 팀 master 에게 묻거나, 보고서에 \"다른 팀에 필요한 작업\"으로 적는다.",
+        "- 공통 리포는 한 팀이 소유한다. 고치는 것은 소유 팀의 봇만 하고, 다른 팀은 읽기만 한다.",
+        "",
+    ]
+    return lines
 
 
 def load_team(hub: Path) -> Team | None:
@@ -431,6 +490,7 @@ def render_preamble(team: Team, bot: Bot) -> str:
         "<soul>", soul, "</soul>",
         "",
         *instructions_block(hub),
+        *collaborators_block(team),
         "## 팀",
         "- master: 사용자와 프로젝트 전체 맥락을 이어가고 일을 배정한다.",
         *roster_lines(team, exclude=bot.name),

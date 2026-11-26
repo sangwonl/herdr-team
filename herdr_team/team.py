@@ -9,7 +9,7 @@ from . import board, herdr
 from .core import (parse_every, trigger_fire,
                    load_questions, next_question_id, question_blocked, roster_lines, save_questions,
                    transcript_digest, transcript_path,
-                   Bot, Team, agent_name, bot_cwd, instructions_block, bot_home, ensure_home, render_preamble, append_log, build_prompt, classify, load_tasks, load_team,
+                   Bot, Team, agent_name, canon_bot, collaborator_links, collaborators_block, linked_teams, bot_cwd, instructions_block, bot_home, ensure_home, render_preamble, append_log, build_prompt, classify, load_tasks, load_team,
                    locked, next_task_id, read_log, resolve_repo, save_tasks, state_dir, update_tasks,
                    wait_done)
 
@@ -22,15 +22,21 @@ def _edit(path: Path | str) -> str:
     return f"Edit(/{path})"
 
 
+def _read_others(team: Team) -> list[str]:
+    """Read rules for linked teams' context.md (agents read it before work; no prompt for that)."""
+    return [f"Read(/{t.hub / '.herdr-team' / 'context.md'})" for t in linked_teams(team).values()]
+
+
 def master_prompt(hub: Path) -> str:
-    """master-prompt.md plus the team-wide user instructions."""
+    """master-prompt.md plus the team-wide user instructions and linked teams."""
     base = (PLUGIN_ROOT / "master-prompt.md").read_text(encoding="utf-8").rstrip("\n")
-    return "\n".join([base, "", *instructions_block(hub)])
+    team = load_team(hub)
+    return "\n".join([base, "", *instructions_block(hub), *(collaborators_block(team) if team else [])])
 
 
 def master_args(team: Team) -> list[str]:
     return ["--append-system-prompt-file", str(team.hub / ".herdr-team" / "MASTER.md"),
-            "--allowedTools", "Bash(herdr-team *)", _edit(team.hub / ".herdr-team" / "context.md")]
+            "--allowedTools", "Bash(herdr-team *)", _edit(team.hub / ".herdr-team" / "context.md"), *_read_others(team)]
 
 
 def bot_args(team: Team, bot: Bot) -> list[str]:
@@ -42,7 +48,7 @@ def bot_args(team: Team, bot: Bot) -> list[str]:
             # so a blanket `herdr-team *` would let a bot run anything without a prompt.
             "--allowedTools", "Bash(herdr-team question *)", "Bash(herdr-team roster)", "Bash(herdr-team peek *)",
             _edit(f"{bot_home(team.hub, bot.name)}/**"),
-            _edit(f"{sd}/reports/**"), _edit(f"{sd}/answers/**"),
+            _edit(f"{sd}/reports/**"), _edit(f"{sd}/answers/**"), *_read_others(team),
             *team.agent_args]
 
 
@@ -281,6 +287,11 @@ def send_task(hub: Path, team: Team, bot: Bot, text: str, origin: str = "master"
 
 def ask(hub: Path, bot_name: str, text: str) -> int:
     team = load_team(hub)
+    if team and _other_team(team, bot_name):
+        t = _other_team(team, bot_name)
+        print(f'Tasks go through {t}\'s master: herdr-team question {t}/master "..."')
+        return 2
+    bot_name = canon_bot(team, bot_name.split("/", 1)[-1])
     bot = next((b for b in team.bots if b.name == bot_name), None) if team else None
     if caller(hub) != "master":
         print('Only the master hands out tasks. If another bot needs to do something, put it in your report. '
@@ -416,6 +427,26 @@ def _known(team: Team, who: str) -> bool:
     return who == "master" or any(b.name == who for b in team.bots)
 
 
+def _target(team: Team, target: str) -> tuple["Team | None", str, str]:
+    """`bot`, `master` or `<team>/<bot|master>` -> (that team, the name in it, error or "")."""
+    if "/" not in target:
+        return team, target, ""
+    tname, who = target.split("/", 1)
+    if tname == team.name:
+        return team, canon_bot(team, who), ""
+    other = linked_teams(team).get(tname)
+    if other is None:
+        why = next((r for c, _, r in collaborator_links(team) if c.name == tname), "not one of this team's collaborators")
+        return None, who, f"{tname}: {why}"
+    return other, canon_bot(other, who), ""
+
+
+def _other_team(team: Team, target: str) -> str:
+    """For ask and nudge: the other team's name when target points outside this team, else ""."""
+    tname = target.split("/", 1)[0] if "/" in target else ""
+    return tname if tname and tname != team.name else ""
+
+
 def roster(hub: Path) -> int:
     team = load_team(hub)
     try:
@@ -428,14 +459,28 @@ def roster(hub: Path) -> int:
     print(f"- master: keeps the big picture with the user and hands out tasks. [{status('master')}]")
     for bot, line in zip(team.bots, roster_lines(team, english=True)):
         print(f"{line} [{status(bot.name)}]")
+    for c, other, why in collaborator_links(team):
+        if other is None:
+            print(f"\n{c.name}: {why}")
+            continue
+        def ostatus(who: str) -> str:
+            return live.get(agent_name(other.name, who), {}).get("agent_status", "not running")
+        print(f"\nTeam {other.name} ({other.hub}) · ask with `herdr-team question {other.name}/<bot|master> ...`")
+        print(f"- {other.name}/master [{ostatus('master')}]")
+        for bot, line in zip(other.bots, roster_lines(other, english=True)):
+            print(f"- {other.name}/{line[2:]} [{ostatus(bot.name)}]")
     return 0
 
 
-def peek(hub: Path, who: str) -> int:
-    team = load_team(hub)
-    if not _known(team, who):
-        print(f"{who}: no such bot in the team.")
+def peek(hub: Path, target: str) -> int:
+    team, who, err = _target(load_team(hub), target)
+    if err:
+        print(err)
         return 2
+    if not _known(team, who):
+        print(f"{target}: no such bot in {team.name}.")
+        return 2
+    hub = team.hub
     name, agent = _agent_for(team, who)
     if agent is None:
         print(f"{who}: not running.")
@@ -460,6 +505,11 @@ def nudge(hub: Path, who: str, text: str) -> int:
     if master_only(hub, "nudge"):   # a nudge reads as the master's direction; bots ask questions instead
         return 2
     team = load_team(hub)
+    if _other_team(team, who):
+        t = _other_team(team, who)
+        print(f'Course corrections go through {t}\'s master: herdr-team question {t}/master "..."')
+        return 2
+    who = who.split("/", 1)[-1]
     if not _known(team, who) or who == "master":
         print(f"{who}: no such bot in the team.")
         return 2
@@ -477,38 +527,50 @@ def nudge(hub: Path, who: str, text: str) -> int:
 
 
 def question(hub: Path, target: str, text: str, timeout: float = 100.0, poll: float = 1.0) -> int:
+    """Ask a bot or master of this team, or of a linked team as `<team>/<bot|master>`.
+    The question record and the answer file live in the answering team's hub: its bots may write
+    only their own hub's answers/, and its board then shows the question too."""
     team = load_team(hub)
     asker = caller(hub)
-    if not _known(team, target):
-        print(f"{target}: no such bot in the team.")
+    tteam, who, err = _target(team, target)
+    if err:
+        print(err)
         return 2
-    if target == asker:
+    if not _known(tteam, who):
+        print(f"{target}: no such bot in {'the team' if tteam is team else tteam.name}.")
+        return 2
+    other = tteam is not team
+    if not other and who == asker:
         print("You can't ask yourself.")
         return 2
-    with locked(hub):
-        open_q = load_questions(hub)
-        if question_blocked(open_q, asker, target):
+    sender = f"{team.name}/{asker}" if other else asker      # as recorded in the answering hub
+    label = f"{tteam.name}/{who}" if other else who           # as recorded in this hub
+    with locked(tteam.hub):
+        # A question the target already sent us lives in our hub; asking back would deadlock both.
+        if question_blocked(load_questions(hub), asker, label):
             print(f"{target} has an open question for you. Answer it first.")
             return 2
-        name, agent = _agent_for(team, target)
+        name, agent = _agent_for(tteam, who)
         if agent is None:
             print(f"{target}: not running.")
             return 2
         if agent.get("agent_status") == "blocked":
             print(f"{target}: waiting for the user, so it can't answer.")
             return 2
-        qid = next_question_id(hub)
-        answer = state_dir(hub) / "answers" / f"{qid}-{target}.md"
+        qid = next_question_id(tteam.hub)
+        answer = state_dir(tteam.hub) / "answers" / f"{qid}-{who}.md"
+        origin = f"{team.name} 팀 {asker}" if other else asker
         herdr.run("agent", "prompt", name,
-                  f"[herdr-team 질문 {qid}] {asker} 의 질문이다:\n\n{text}\n\n"
+                  f"[herdr-team 질문 {qid}] {origin} 의 질문이다:\n\n{text}\n\n"
                   f"답을 아래 파일에 5~15줄로 써라. 파일만 쓰고, 하던 일이 있으면 그대로 이어가라.\n{answer}")
-        save_questions(hub, open_q + [{"id": qid, "from": asker, "to": target, "answer": str(answer), "sent_at": time.time()}])
-        append_log(hub, "question", target, qid, text.strip().splitlines()[0] if text.strip() else "", sender=asker)
+        save_questions(tteam.hub, load_questions(tteam.hub) + [
+            {"id": qid, "from": sender, "to": who, "answer": str(answer), "sent_at": time.time()}])
+        append_log(tteam.hub, "question", who, qid, text.strip().splitlines()[0] if text.strip() else "", sender=sender)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if answer.exists() and answer.stat().st_size > 0:
             time.sleep(0.3)  # let the writer finish
-            append_log(hub, "answer", target, qid, sender=asker)
+            append_log(tteam.hub, "answer", who, qid, sender=sender)
             print(answer.read_text(encoding="utf-8", errors="replace").strip())
             return 0
         time.sleep(poll)

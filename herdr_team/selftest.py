@@ -1,6 +1,7 @@
 """Self-check: `python3 -m herdr_team selftest`. Runs every test_* function here."""
 import contextlib
 import io
+import json
 import os
 import sys
 import tempfile
@@ -830,6 +831,76 @@ def test_templates_purpose_and_custom():
         assert default_purpose(hub, template_purpose("qa"), "reviewer") == template_purpose("reviewer")
         assert default_purpose(hub, "내가 쓴 목적", "reviewer") == "내가 쓴 목적"
         assert is_default_purpose(hub, "우리 방식 개발") and not is_default_purpose(hub, "내가 쓴 목적")
+
+
+def test_collaborators():
+    from .core import Collaborator, collaborator_links, render_preamble
+    from .wizard import Draft, commit
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d).resolve()
+        ha, hb = root / "a", root / "b"
+        ha.mkdir(), hb.mkdir()
+        save_team(Team("aa", [Bot("api", [], "API")], [], ha, [Collaborator("bb", hb)]))
+        save_team(Team("bb", [Bot("web", [], "웹")], [], hb))
+        calls = root / "calls"
+        fake = root / "fake-herdr"
+        # agent prompt: 기록하고, 프롬프트 마지막 줄(답 파일)에 답을 쓴다
+        fake.write_text(f"""#!/bin/sh
+echo "$*" >> "{calls}"
+case "$1 $2" in
+  "agent list") echo '{{"result":{{"agents":[{{"name":"aa-api","agent_status":"working","pane_id":"w:p2"}},{{"name":"bb-web","agent_status":"idle","pane_id":"x:p2"}},{{"name":"bb-master","agent_status":"idle","pane_id":"x:p1"}}]}}}}' ;;
+  "agent prompt") printf '%s' "$4" | tail -n 1 | xargs -I{{}} sh -c 'echo "포트는 18080" > "{{}}"'; echo '{{"result":{{}}}}' ;;
+  *) echo '{{"result":{{}}}}' ;;
+esac
+""")
+        fake.chmod(0o755)
+        os.environ.update(HERDR_BIN_PATH=str(fake), HERDR_PANE_ID="w:p2")   # aa 의 api 가 묻는다
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                # 한쪽만 적혀 있으면 연결하지 않고 이유를 보인다
+                assert [r for _, t, r in collaborator_links(load_team(ha))] == ["not linked back (add this team to bb's collaborators)"]
+                assert team_mod.question(ha, "bb/web", "포트?", timeout=1) == 2
+                assert team_mod.roster(ha) == 0
+            assert "bb: not linked back" in out.getvalue() and "agent prompt" not in calls.read_text()
+            assert "연결된 팀" not in render_preamble(load_team(ha), load_team(ha).bots[0])
+            # 양쪽이 서로를 적으면 연결된다. setup 저장(commit)도 collaborators 를 지킨다
+            save_team(Team("bb", [Bot("web", [], "웹")], [], hb, [Collaborator("aa", ha)]))
+            commit(hb, "bb", [Draft(load_team(hb).bots[0], None, "web")], [])
+            assert load_team(hb).collaborators == [Collaborator("aa", ha)]
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                assert team_mod.question(ha, "bb/WEB", "포트?", timeout=3, poll=0.05) == 0
+                assert team_mod.roster(ha) == 0
+            # 질문 기록과 답은 답하는 팀(bb)의 허브에 있다: 그 봇은 자기 허브 answers/ 만 쓸 수 있다
+            answer = hb / ".herdr-team" / "answers" / "q1-web.md"
+            assert answer.read_text().strip() == "포트는 18080" and "포트는 18080" in out.getvalue()
+            q = json.loads((hb / ".herdr-team" / "questions.json").read_text())
+            assert q[0]["from"] == "aa/api" and q[0]["to"] == "web"
+            assert not (ha / ".herdr-team" / "answers").exists() or not any((ha / ".herdr-team" / "answers").iterdir())
+            log = calls.read_text()
+            assert "agent prompt bb-web [herdr-team 질문 q1] aa 팀 api" in log and str(answer) in log
+            assert "bb/web: 웹" in out.getvalue() and "bb/master [idle]" in out.getvalue()
+            # ask, nudge 는 다른 팀을 거부하고 상대 master 로 안내한다
+            del os.environ["HERDR_PANE_ID"]
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                assert team_mod.ask(ha, "bb/web", "일") == 2 and team_mod.nudge(ha, "bb/web", "방향") == 2
+                assert team_mod.question(ha, "cc/web", "x", timeout=1) == 2
+            assert "Tasks go through bb's master: herdr-team question bb/master" in out.getvalue()
+            assert "cc: not one of this team's collaborators" in out.getvalue()
+            # 프롬프트와 권한: 상대 context.md 경로와 읽기 규칙
+            a = load_team(ha)
+            pre = render_preamble(a, a.bots[0])
+            assert "## 연결된 팀" in pre and str(hb / ".herdr-team" / "context.md") in pre and "소유 팀의 봇만" in pre
+            assert f"Read(/{hb / '.herdr-team' / 'context.md'})" in team_mod.bot_args(a, a.bots[0])
+            assert "연결된 팀" in team_mod.master_prompt(ha)
+            # 잘못된 설정은 거부한다
+            (ha / "herdr-team.toml").write_text('name = "aa"\n[[bots]]\nname = "api"\n[[collaborators]]\nname = "bb"\nhub = "rel/path"\n')
+            assert load_team(ha) is None
+        finally:
+            os.environ.pop("HERDR_BIN_PATH", None)
+            os.environ.pop("HERDR_PANE_ID", None)
 
 
 def test_python_version_check():

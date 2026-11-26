@@ -77,7 +77,8 @@ def commit(hub: Path, project: str, drafts: list[Draft], agent_args: list[str]) 
             if soul != before:
                 (new / "SOUL.md").write_text(soul, encoding="utf-8")
     ensure_instructions(hub)
-    team = Team(project, bots, agent_args, hub)
+    old = load_team(hub)   # collaborators are edited in herdr-team.toml by hand; keep them
+    team = Team(project, bots, agent_args, hub, old.collaborators if old else [])
     save_team(team)
     return team
 

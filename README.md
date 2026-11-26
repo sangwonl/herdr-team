@@ -86,6 +86,22 @@ Commands find the hub by looking up from the current folder, or use `HERDR_TEAM_
 
 Add triggers in setup (bot → triggers). Each one runs its `run` command on a schedule; when the output changes, the bot gets a task.
 
+## Collaborators
+
+Two teams on one machine can work together. Each lists the other in its `herdr-team.toml`:
+
+```toml
+[[collaborators]]
+name = "api"                      # the other team's project name
+hub = "/Users/me/work/api-hub"    # absolute path of the other hub
+```
+
+They are linked only when both sides list each other; otherwise `roster` says what is missing. Restart the team after a change.
+
+- Can: see the other team in `roster`, ask it with `herdr-team question <team>/<bot|master> "..."`, and read its `.herdr-team/context.md` (agents are told to read it before work).
+- Can't: `ask` or `nudge` across teams. Work for another team goes through that team's master.
+- A repo both teams use is owned by one team. Only the owner's bots change it; the other team reads it and asks the owner for changes.
+
 ## Security
 
 - Triggers (`[[bots.triggers]]` in `herdr-team.toml`) run their `run` command with `sh -c` as you. Anyone who can write that file can run commands on your machine.
