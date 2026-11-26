@@ -10,6 +10,7 @@ import curses
 import locale
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -45,13 +46,25 @@ def move_first(items: list, i: int) -> list:
     return [items[i]] + items[:i] + items[i + 1:]
 
 
-def commit(hub: Path, project: str, drafts: list[Draft], agent_args: list[str]) -> Team:
-    """Apply the edits: move renamed homes, seed new ones, write purposes into SOUL.md, save the spec.
-    Homes of bots removed from the team are left on disk (their memory may be wanted later)."""
+def delete_home(hub: Path, name: str) -> None:
+    """Delete a bot's home folder, only if it really is one folder directly under this hub's bots/."""
+    base = (hub / ".herdr-team" / "bots").resolve()
+    home = bot_home(hub, name).resolve()
+    if home.parent != base:
+        raise ValueError(f"not a bot home under {base}: {home}")
+    if home.is_dir():
+        shutil.rmtree(home)
+
+
+def commit(hub: Path, project: str, drafts: list[Draft], agent_args: list[str], purge: set[str] = frozenset()) -> Team:
+    """Apply the edits: delete the homes the user asked to delete (purge), move renamed homes, seed new
+    ones, write purposes into SOUL.md, save the spec. Other removed bots keep their homes on disk."""
     bots = [d.bot for d in drafts]
     problems = team_problems(project, bots)
     if problems:
         raise ValueError("; ".join(problems))
+    for name in purge:   # first, so a new bot with that name starts from a fresh home
+        delete_home(hub, name)
     for d in drafts:
         new = bot_home(hub, d.bot.name)
         if d.origin and d.origin != d.bot.name:
@@ -159,7 +172,7 @@ def _changes(old: Bot, d: Draft, touched: set[str]) -> list[str]:
 
 
 def change_summary(existing: Team | None, project: str, drafts: list[Draft], touched: set[str],
-                   instructions_changed: bool) -> list[list]:
+                   instructions_changed: bool, purge: set[str] = frozenset()) -> list[list]:
     """What saving will do, one row per change."""
     old = {b.name: b for b in existing.bots} if existing else {}
     rows = []
@@ -179,7 +192,10 @@ def change_summary(existing: Team | None, project: str, drafts: list[Draft], tou
                 rows.append([("~ ", "warn"), (d.bot.name, f"bot:{d.bot.name}"), ("  " + " · ".join(changes), "")])
     for name in old:
         if name not in {d.origin for d in drafts}:
-            rows.append([("- ", "bad"), (name, "dim"), ("  removed from the team (SOUL.md and MEMORY.md stay in its home)", "")])
+            rows.append([("- ", "bad"), (name, "dim"), ("  removed from the team" if name in purge else
+                                                         "  removed from the team (SOUL.md and MEMORY.md stay in its home)", "")])
+    for name in sorted(purge):
+        rows.append([("- ", "bad"), (f"delete home folder of {name}", "bad"), ("  (SOUL.md, MEMORY.md; can't be undone)", "dim")])
     if instructions_changed:
         rows.append([("~ ", "warn"), ("team instructions changed", ""), ("  (every bot and the master)", "dim")])
     return rows or [[("Nothing changed", "dim")]]
@@ -667,8 +683,11 @@ def edit_new_soul(win, ui: Ui, d: Draft) -> str:
     return error
 
 
-def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched: set[str]) -> Draft | None:
-    """Edit a copy of the bot; returns it on 'done', None when cancelled."""
+REMOVE = "remove"   # edit_bot's answer when the user picks "remove bot"
+
+
+def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched: set[str]) -> Draft | str | None:
+    """Edit a copy of the bot; returns it on 'done', REMOVE on 'remove bot', None when cancelled."""
     d = copy.deepcopy(draft)
     bot = d.bot
     cur, message = 0, ""
@@ -693,6 +712,7 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
                           (f"  {', '.join(t.name for t in bot.triggers)}" if bot.triggers else "", "dim")]),
             ("", []),
             ("done", [("✓ done", "ok")]),
+            ("remove", [("✕ remove bot", "warn")]),
         ]
         kinds, rows = [k for k, _ in items], [r for _, r in items]
         crumb = f"team / {bot.name or 'new bot'}"
@@ -703,6 +723,8 @@ def edit_bot(win, ui: Ui, project: str, draft: Draft, others: list[str], touched
         if key == "esc":
             return None
         kind = kinds[cur]
+        if key == "enter" and kind == "remove":
+            return REMOVE
         if key == "s" or (key == "enter" and kind == "done"):
             err = bot_name_error(project, bot.name, others)
             if err:
@@ -805,6 +827,18 @@ def team_screen(win, hub: Path) -> Saved | None:
     instructions_path = hub / ".herdr-team" / "instructions.md"
     instructions_before = user_instructions(hub)
     touched: set[str] = set()
+    purge: set[str] = set()   # homes to delete when the team is saved
+
+    def remove(i: int) -> None:
+        """d on the list or "remove bot" in the bot editor. Deleting the home is asked separately (default no)."""
+        d = drafts[i]
+        if not confirm_in(win, ui, "team / remove", f"Remove {d.bot.name} from the team?"):
+            return
+        if has_home(hub, d) and confirm_in(win, ui, "team / remove",
+                                           f"Also delete its home folder (SOUL.md, MEMORY.md)? This cannot be undone."):
+            purge.add(d.origin)
+        del drafts[i]
+        ui.dirty = True
     cur, message = 3, ""
     first = 3   # rows: project, team instructions, separator, bots..., add, separator, save
     while True:
@@ -856,9 +890,9 @@ def team_screen(win, hub: Path) -> Saved | None:
                 message = "Can't save: " + problems[0]
                 continue
             instructions_changed = user_instructions(hub) != instructions_before
-            if not review(win, ui, change_summary(existing, project, drafts, touched, instructions_changed)):
+            if not review(win, ui, change_summary(existing, project, drafts, touched, instructions_changed, purge)):
                 continue
-            team = commit(hub, project, drafts, agent_args)
+            team = commit(hub, project, drafts, agent_args, purge)
             return Saved(team, changed_bots(existing, drafts, touched, instructions_changed),
                          bool(existing) and existing.name != project, instructions_changed,
                          [b.name for b in existing.bots if b.name not in {d.bot.name for d in drafts}] if existing else [])
@@ -872,10 +906,7 @@ def team_screen(win, hub: Path) -> Saved | None:
                 drafts.append(d)
                 ui.dirty, cur = True, first + len(drafts) - 1
         elif key == "d" and first <= cur < add_row:
-            name = drafts[cur - first].bot.name
-            if confirm_in(win, ui, "team / remove", f"Remove {name} from the team? SOUL.md and MEMORY.md stay in its home folder."):
-                del drafts[cur - first]
-                ui.dirty = True
+            remove(cur - first)
         elif key == "enter" and cur == 0:
             got = input_line(win, ui, "team / project", "Project name (prefix of every agent name)", project,
                              lambda v: (name_error(v) or name_error(agent_name(v, "master"))) if v else "Name is empty")
@@ -884,7 +915,9 @@ def team_screen(win, hub: Path) -> Saved | None:
         elif key == "enter" and first <= cur < add_row:
             i = cur - first
             got = edit_bot(win, ui, project, drafts[i], names[:i] + names[i + 1:], touched)
-            if got:
+            if got == REMOVE:
+                remove(i)
+            elif got:
                 drafts[i], ui.dirty = got, True
 
 

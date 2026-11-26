@@ -903,6 +903,38 @@ esac
             os.environ.pop("HERDR_PANE_ID", None)
 
 
+def test_remove_bot_home():
+    from .wizard import Draft, change_summary, commit, delete_home
+    with tempfile.TemporaryDirectory() as d:
+        hub = Path(d).resolve()
+        save_team(Team("p", [Bot("api", [], "API"), Bot("web", [], "웹")], [], hub))
+        bots = hub / ".herdr-team" / "bots"
+        (bots / "api" / "MEMORY.md").write_text("기억")
+        team = load_team(hub)
+        keep = [Draft(team.bots[1], None, "web")]
+        # 저장 전: 요약에만 보이고 아무것도 지우지 않는다
+        rows = change_summary(team, "p", keep, set(), False, {"api"})
+        assert any("delete home folder of api" in "".join(t for t, _ in r) for r in rows)
+        assert (bots / "api" / "MEMORY.md").exists()
+        # 홈을 지우지 않고 빼면 홈은 남는다
+        commit(hub, "p", keep, [])
+        assert (bots / "api" / "MEMORY.md").exists()
+        # 저장하면(purge) 지워지고, 같은 이름의 새 봇은 새 홈에서 시작한다
+        commit(hub, "p", keep + [Draft(Bot("api", [], ""), "blank", None)], [], {"api"})
+        assert not (bots / "api" / "MEMORY.md").read_text().startswith("기억")
+        commit(hub, "p", keep, [], {"api"})
+        assert not (bots / "api").exists() and (bots / "web" / "SOUL.md").exists()
+        # bots/ 바로 아래가 아닌 경로는 거부한다
+        (hub / "outside").mkdir()
+        for bad in ("../../outside", "", "../bots", "web/.."):
+            try:
+                delete_home(hub, bad)
+                raise AssertionError(bad)
+            except ValueError:
+                pass
+        assert (hub / "outside").exists() and (bots / "web").exists()
+
+
 def test_python_version_check():
     from . import version_error
     assert version_error((3, 9, 6)) == "herdr-team needs Python 3.11+ (found 3.9)"
