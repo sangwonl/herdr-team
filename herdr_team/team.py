@@ -38,9 +38,8 @@ def master_prompt(hub: Path) -> str:
 
 def master_args(team: Team) -> list[str]:
     return ["--append-system-prompt-file", str(team.hub / ".herdr-team" / "MASTER.md"),
-            "--allowedTools", "Bash(herdr-team *)", _edit(team.hub / ".herdr-team" / "context.md"), *_read_others(team)]
-    # No agent_args: the team's are for bots (e.g. --permission-mode acceptEdits), and the master
-    # must not edit repos without asking.
+            "--allowedTools", "Bash(herdr-team *)", _edit(team.hub / ".herdr-team" / "context.md"), *_read_others(team),
+            *team.agent_args, *team.master_agent_args]   # the team's defaults, then the master's own
 
 
 def bot_args(team: Team, bot: Bot) -> list[str]:
@@ -53,7 +52,7 @@ def bot_args(team: Team, bot: Bot) -> list[str]:
             "--allowedTools", "Bash(herdr-team question *)", "Bash(herdr-team roster)", "Bash(herdr-team peek *)",
             _edit(f"{bot_home(team.hub, bot.name)}/**"),
             _edit(f"{sd}/reports/**"), _edit(f"{sd}/answers/**"), *_read_others(team),
-            *team.agent_args]
+            *team.agent_args, *bot.agent_args]   # the team's defaults, then this agent's own
 
 
 def live_agents() -> dict[str, dict]:

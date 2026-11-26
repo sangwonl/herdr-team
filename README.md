@@ -44,6 +44,8 @@ The master and its agents get `herdr-team` on their `PATH` automatically. Tabs t
 4. Tell the master what you want, e.g. "ask api to add a /health endpoint".
 
 Setup shows its own key hints. After saving, it offers to restart the agents that changed. To check an agent, press `Enter` on its card in the board (`prefix+t`) or use herdr's `prefix+g`.
+In setup, `Tab` completes folder names when you type a folder path. To remove an agent, press `d` on it or pick `remove agent` in its editor. Setup then asks whether to delete its home folder (`SOUL.md`, `MEMORY.md`) too. The default is no, and the folder is deleted only when you save.
+`up` finds the team's workspace by its label, the project name. If you rename the workspace in herdr, the next `up` creates a new one. To rename the team, change the project name in setup.
 Board keys: `↑` `↓` (or `j` `k`) move · `Enter` jump to that agent's pane · `l` log size · `q` close.
 
 ## Working with the master
@@ -63,9 +65,26 @@ Each agent's instructions come in three layers:
 2. **Team-wide**: `.herdr-team/instructions.md` goes to the master and all its agents (`e` on setup's main screen). A file with only comments is ignored.
 3. **Per agent**: the `## Extra` section of `SOUL.md`. It is kept when you re-apply a template.
 
-The master also has instructions of its own: `.herdr-team/master.md` (the `Master` row on setup's main screen). They are added after the team-wide ones and override the master's built-in instructions. A file with only comments is ignored. The team's `agent_args` are not passed to the master.
+The master also has instructions of its own: `.herdr-team/master.md` (the `Master` row on setup's main screen). They are added after the team-wide ones and override the master's built-in instructions. A file with only comments is ignored.
+
+Extra Claude Code arguments go in `herdr-team.toml`. The top-level ones go to the master and every agent; `[master]` and each `[[agents]]` can add their own, which come after the defaults (for the same option, the later one wins). Edit them in the file; setup only shows them.
+
+```toml
+agent_args = ["--model", "sonnet"]          # default: the master and every agent
+
+[master]
+agent_args = ["--model", "opus"]            # the master only, after the default
+
+[[agents]]
+name = "reviewer"
+agent_args = ["--model", "opus"]            # this agent only, after the default
+```
+
+`--append-system-prompt*` and `--system-prompt*` are not allowed in any `agent_args`: they would replace the team's instructions. Put extra instructions in `instructions.md`, `master.md` or the agent's `SOUL.md` instead.
 
 Agents read these at start. Restart them after a change. For the master, `/exit` it and start the team again.
+
+Hubs from older versions keep working: `[[bots]]` in `herdr-team.toml` is still read, and `.herdr-team/bots/` moves to `.herdr-team/agents/` on the next run.
 
 ## Commands
 
@@ -86,7 +105,23 @@ Commands find the hub by looking up from the current folder, or use `HERDR_TEAM_
 
 ## Triggers
 
-Add triggers in setup (agent → triggers). Each one runs its `run` command on a schedule; when the output changes, the agent gets a task.
+Add triggers in setup (agent → triggers). Each one runs its `run` command on a schedule; when the output changes, the agent gets a task. In `herdr-team.toml` a trigger looks like this:
+
+```toml
+[[agents.triggers]]
+name = "new-prs"
+every = "10m"                             # 30s, 10m, 2h or 1d
+run = "gh pr list --json number,title"
+prompt = "Review the pull requests that are new."
+```
+
+- `run` runs with `sh -c` in the hub folder every `every`. It is stopped after 120 seconds.
+- The agent gets `prompt` and the output (up to 4000 characters) only when the command succeeds, prints something, and prints something different from last time.
+- The first run only records the output to compare against. Nothing is sent.
+- If the agent is busy, the trigger tries again on the next run.
+- When a trigger's task is done or needs your approval, the master is told.
+- If any agent has triggers, `up` opens a `watch` tab that runs them. Close that tab and triggers stop; the next `up` opens it again. Trigger edits apply without restarting it.
+- To send the task on every run, use a command whose output always changes, e.g. `run = "date +%s"`. This uses tokens on every run.
 
 ## Collaborators
 

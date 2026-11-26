@@ -149,13 +149,34 @@ def test_wizard_pure():
         drafts = draft_bots(hub, old)
         assert [(b.name, b.role, on) for b, on in drafts] == [("tb", "내가 쓴 역할", True), ("web-sdk", "Web SDK", False), ("ext", "외부", True), ("free", "자유", True)]
 
+def test_complete_dir():
+    from .wizard import complete_dir
+    with tempfile.TemporaryDirectory() as d:
+        hub = Path(d)
+        for n in ("api", "app-web", "apple", ".hidden", "zeta"):
+            (hub / n).mkdir()
+        (hub / "afile").write_text("x")                              # 파일은 후보가 아니다
+        (hub / "zeta" / "inner").mkdir()
+        assert complete_dir(hub, "a") == ("ap", ["api", "app-web", "apple"])
+        assert complete_dir(hub, "app") == ("app", ["app-web", "apple"])
+        assert complete_dir(hub, "app-") == ("app-web/", [])
+        assert complete_dir(hub, "zeta/") == ("zeta/inner/", [])
+        assert complete_dir(hub, "") == ("", ["api", "app-web", "apple", "zeta"])   # 숨은 폴더는 빠진다
+        assert complete_dir(hub, ".h") == (".hidden/", [])
+        assert complete_dir(hub, d + "/z") == (d + "/zeta/", [])        # 절대 경로
+        assert complete_dir(hub, "nope/x") == ("nope/x", [])
+        assert complete_dir(hub, "~") == ("~/", [])
+        assert complete_dir(hub, "~/")[0].startswith("~/")
+
+
 def test_agent_args():
     hub = Path("/tmp/my hub")
     team = Team("p", [Bot("a", ["./a", "./b"], "")], ["--permission-mode", "acceptEdits"], hub)
     m = team_mod.master_args(team)
     assert m[0] == "--append-system-prompt-file" and m[1] == "/tmp/my hub/.herdr-team/MASTER.md"
-    # 마스터에는 팀 공통 agent_args(에이전트용)가 붙지 않는다
-    assert team_mod.master_args(team)[2:] == ["--allowedTools", "Bash(herdr-team *)", "Edit(//tmp/my hub/.herdr-team/context.md)"]
+    # 팀 agent_args 는 마스터를 포함한 모두의 기본값이다
+    assert team_mod.master_args(team)[2:] == ["--allowedTools", "Bash(herdr-team *)", "Edit(//tmp/my hub/.herdr-team/context.md)",
+                                              "--permission-mode", "acceptEdits"]
     assert team_mod.bot_args(team, team.bots[0]) == [
         "--append-system-prompt-file", "/tmp/my hub/.herdr-team/agents/a/PREAMBLE.md",
         "--add-dir", "/tmp/my hub/.herdr-team", "/tmp/my hub/b",
@@ -941,8 +962,8 @@ def test_remove_bot_home():
 
 
 def test_master_settings():
-    from .core import dump_team, ensure_instructions, user_instructions
-    from .wizard import Draft, change_summary, commit, master_preview
+    from .core import dump_team, ensure_instructions, spec_error, user_instructions
+    from .wizard import Draft, bot_preview, change_summary, commit, master_preview
     with tempfile.TemporaryDirectory() as d:
         hub = Path(d).resolve()
         save_team(Team("p", [Bot("a", [], "A")], ["--permission-mode", "acceptEdits"], hub))
@@ -964,12 +985,51 @@ def test_master_settings():
         team = load_team(hub)
         rows = change_summary(team, "p", [Draft(team.bots[0], None, "a")], set(), False, master_changed=True)
         assert any("master instructions changed" in "".join(t for t, _ in r) for r in rows)
-        # 예전 [master] agent_args 가 남아 있어도 오류 없이 무시하고, setup 저장 때 빠진다
-        (hub / "herdr-team.toml").write_text(dump_team(team) + '\n[master]\nagent_args = ["--model", "opus"]\n')
+        # 실행 인자: 팀 agent_args 는 마스터 포함 모두의 기본, [master]·[[agents]] 의 agent_args 는 그 뒤에 붙는다
+        assert "[master]" not in dump_team(team) and "agent_args = [" not in dump_team(team).split("[[agents]]", 1)[1]
+        team.agent_args = ["--model", "sonnet"]
+        team.bots.append(Bot("rv", [], "", [], ["--model", "opus"]))
+        save_team(team)
+        text = (hub / "herdr-team.toml").read_text()
+        (hub / "herdr-team.toml").write_text(text.replace("\n[[agents]]", '\n[master]\nagent_args = ["--effort", "high"]\n\n[[agents]]', 1))
         team = load_team(hub)
-        assert team is not None and "--model" not in team_mod.master_args(team)
-        commit(hub, "p", [Draft(team.bots[0], None, "a")], team.agent_args)
-        assert "[master]" not in (hub / "herdr-team.toml").read_text()
+        a, rv = team.bots
+        assert team.master_agent_args == ["--effort", "high"] and rv.agent_args == ["--model", "opus"] and a.agent_args == []
+        assert team_mod.master_args(team)[-4:] == ["--model", "sonnet", "--effort", "high"]
+        assert team_mod.bot_args(team, a)[-2:] == ["--model", "sonnet"] and "opus" not in team_mod.bot_args(team, a)
+        assert team_mod.bot_args(team, rv)[-4:] == ["--model", "sonnet", "--model", "opus"]
+        assert any("--model opus" in "".join(t for t, _ in r) for r in bot_preview(hub, Draft(rv, None, "rv")))
+        # setup 저장 때 보존: 이름 바꾸기와 템플릿 다시 적용을 해도 남는다
+        rv2 = Bot("reviewer", rv.dirs, rv.role, rv.triggers, rv.agent_args)
+        commit(hub, "p", [Draft(a, None, "a"), Draft(rv2, None, "rv", reapply="reviewer")], team.agent_args)
+        team = load_team(hub)
+        assert team.master_agent_args == ["--effort", "high"] and team.agent_args == ["--model", "sonnet"]
+        assert [(b.name, b.agent_args) for b in team.bots] == [("a", []), ("reviewer", ["--model", "opus"])]
+        text = (hub / "herdr-team.toml").read_text()
+        for bad, msg in (('[master]\nagent_args = "--model opus"', "[master] agent_args must be a list of strings"),
+                         ('[master]\nagent_args = [1]', "[master] agent_args must be a list of strings")):
+            (hub / "herdr-team.toml").write_text(text.replace('[master]\nagent_args = ["--effort", "high"]', bad))
+            assert msg in (spec_error(hub) or ""), spec_error(hub)
+        (hub / "herdr-team.toml").write_text(text.replace('agent_args = ["--model", "opus"]', 'agent_args = "--model opus"'))
+        assert "agent_args of reviewer must be a list of strings" in (spec_error(hub) or ""), spec_error(hub)
+
+
+def test_agent_args_no_system_prompt():
+    from .core import spec_error
+    with tempfile.TemporaryDirectory() as d:
+        hub = Path(d)
+        base = 'name = "p"\n{top}\n[master]\n{master}\n\n[[agents]]\nname = "rv"\n{agent}\n'
+        ok = dict(top='agent_args = ["--model", "sonnet"]', master="", agent="")
+        (hub / "herdr-team.toml").write_text(base.format(**ok))
+        assert spec_error(hub) is None
+        for where, value, msg in (
+                ("top", '["--append-system-prompt-file", "x.md"]', ("agent_args: --append-system-prompt-file", "instructions.md")),
+                ("master", '["--system-prompt=hi"]', ("[master] agent_args: --system-prompt", "master.md")),
+                ("agent", '["--model", "opus", "--append-system-prompt", "x"]', ("agent_args of rv: --append-system-prompt ", "rv/SOUL.md")),
+                ("agent", '["--system-prompt-file=x"]', ("agent_args of rv: --system-prompt-file", "SOUL.md"))):
+            (hub / "herdr-team.toml").write_text(base.format(**{**ok, where: f"agent_args = {value}"}))
+            err = spec_error(hub) or ""
+            assert all(m in err for m in msg), err
 
 
 def test_agents_rename_compat():

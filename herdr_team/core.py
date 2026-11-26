@@ -89,6 +89,7 @@ class Bot:
     dirs: list[str] = field(default_factory=list)   # first is where it runs; the rest are extra access
     role: str = ""                                   # purpose sentence; lives in the bot's SOUL.md
     triggers: list[Trigger] = field(default_factory=list)
+    agent_args: list[str] = field(default_factory=list)   # this agent only, after the team's agent_args
 
 
 @dataclass
@@ -98,6 +99,7 @@ class Team:
     agent_args: list[str] = field(default_factory=list)
     hub: Path = Path(".")
     collaborators: list["Collaborator"] = field(default_factory=list)
+    master_agent_args: list[str] = field(default_factory=list)   # [master] agent_args: the master only, after agent_args
 
 
 @dataclass
@@ -115,8 +117,12 @@ def _q(s: str) -> str:
 def dump_team(team: Team) -> str:
     out = [f"name = {_q(team.name)}",
            "agent_args = [" + ", ".join(_q(a) for a in team.agent_args) + "]"]
+    if team.master_agent_args:
+        out += ["", "[master]", "agent_args = [" + ", ".join(_q(a) for a in team.master_agent_args) + "]"]
     for b in team.bots:
         out += ["", "[[agents]]", f"name = {_q(b.name)}", "dirs = [" + ", ".join(_q(d) for d in b.dirs) + "]"]
+        if b.agent_args:
+            out.append("agent_args = [" + ", ".join(_q(a) for a in b.agent_args) + "]")
         for t in b.triggers:
             out += ["", "[[agents.triggers]]", f"name = {_q(t.name)}", f"every = {_q(t.every)}",
                     f"run = {_q(t.run)}", f"prompt = {_q(t.prompt)}"]
@@ -140,6 +146,7 @@ def save_team(team: Team) -> None:
     _write_atomic(team.hub / SPEC_FILE, dump_team(team))
 
 
+SYSTEM_PROMPT_OPTS = ("--append-system-prompt", "--append-system-prompt-file", "--system-prompt", "--system-prompt-file")
 RESERVED = ("master", "watch")   # the master agent and the watch tab use these
 
 
@@ -154,6 +161,14 @@ def _parse_team(hub: Path) -> Team:
     def strings(value, what: str) -> list[str]:
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             raise ValueError(f"{what} must be a list of strings")
+        return value
+
+    def args(value, what: str, instead: str) -> list[str]:
+        # Claude Code keeps only the last system-prompt option, which would drop MASTER.md / PREAMBLE.md.
+        for a in strings(value, what):
+            if a.split("=", 1)[0] in SYSTEM_PROMPT_OPTS:
+                raise ValueError(f"{what}: {a.split('=', 1)[0]} would replace the team's instructions; "
+                                 f"write extra instructions in {instead} instead")
         return value
 
     project = data.get("name")
@@ -185,7 +200,8 @@ def _parse_team(hub: Path) -> Team:
             triggers.append(Trigger(t["name"], t["every"], t["run"], t["prompt"]))
         soul = _read(bot_home(hub, name) / "SOUL.md")
         role = soul_description(soul) if soul else str(b.get("role", ""))  # `role` is the v1 key
-        bots.append(Bot(name, dirs, role, triggers))
+        bots.append(Bot(name, dirs, role, triggers, args(b.get("agent_args", []), f"agent_args of {name}",
+                                                          f".herdr-team/agents/{name}/SOUL.md (## Extra)")))
     collaborators = []
     raw = data.get("collaborators", [])
     if not isinstance(raw, list) or not all(isinstance(c, dict) for c in raw):
@@ -197,7 +213,11 @@ def _parse_team(hub: Path) -> Team:
         if not isinstance(other, str) or not Path(other).expanduser().is_absolute():
             raise ValueError(f"collaborator {name}: hub must be an absolute path")
         collaborators.append(Collaborator(name, Path(other).expanduser()))
-    return Team(project, bots, strings(data.get("agent_args", []), "agent_args"), hub, collaborators)
+    master = data.get("master", {})
+    if not isinstance(master, dict):
+        raise ValueError("invalid [master] entry")
+    return Team(project, bots, args(data.get("agent_args", []), "agent_args", ".herdr-team/instructions.md"), hub,
+                collaborators, args(master.get("agent_args", []), "[master] agent_args", ".herdr-team/master.md"))
 
 
 def collaborator_links(team: Team) -> list[tuple[Collaborator, "Team | None", str]]:

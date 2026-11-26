@@ -90,10 +90,27 @@ def commit(hub: Path, project: str, drafts: list[Draft], agent_args: list[str], 
             if soul != before:
                 (new / "SOUL.md").write_text(soul, encoding="utf-8")
     ensure_instructions(hub)
-    old = load_team(hub)   # collaborators are edited in herdr-team.toml by hand; keep them
-    team = Team(project, bots, agent_args, hub, old.collaborators if old else [])
+    old = load_team(hub)   # collaborators and [master] agent_args are edited in herdr-team.toml by hand; keep them
+    team = Team(project, bots, agent_args, hub, old.collaborators if old else [], old.master_agent_args if old else [])
     save_team(team)
     return team
+
+
+def complete_dir(base: Path, text: str) -> tuple[str, list[str]]:
+    """Tab completion for a folder path: (new text, candidates when several). Relative to base; / and ~ work.
+    Hidden folders only once the typed part starts with a dot."""
+    if text == "~":
+        return "~/", []
+    head, slash, part = text.rpartition("/")
+    prefix = head + slash
+    try:
+        names = sorted(e.name for e in (base / Path(prefix or ".").expanduser()).iterdir()
+                       if e.name.startswith(part) and (part.startswith(".") or not e.name.startswith(".")) and e.is_dir())
+    except OSError:
+        return text, []
+    if len(names) == 1:
+        return prefix + names[0] + "/", []
+    return (prefix + os.path.commonprefix(names), names) if names else (text, [])
 
 
 def where(dirs: list[str]) -> str:
@@ -146,6 +163,8 @@ def bot_preview(hub: Path, d: Draft) -> list[list]:
     trig = [f"{t.name} · {t.every}" for t in b.triggers] or ["none"]
     rows.append([("Triggers      ", "dim"), (trig[0], "")])
     rows += [[("        ", ""), (t, "")] for t in trig[1:]]
+    if b.agent_args:   # edited in herdr-team.toml only
+        rows.append([("agent_args    ", "dim"), (" ".join(b.agent_args), ""), ("  (after the team's)", "dim")])
     rows += [[], [("─ instructions preview ", "dim")]]
     body = soul_text(hub, d)
     start = body.find("\n## ")
@@ -403,11 +422,13 @@ def select(win, ui: Ui, crumb: str, title: str, rows: list[list], hints: list[tu
 
 
 def input_line(win, ui: Ui, crumb: str, label: str, value: str, validate=None, note: str = "",
-               progress=None) -> str | None:
-    """One-line field in a panel. Errors show under the field as you type; Enter only passes a valid value."""
-    tried = False
+               progress=None, complete=None) -> str | None:
+    """One-line field in a panel. Errors show under the field as you type; Enter only passes a valid value.
+    complete(text) -> (text, candidates) turns on Tab completion; candidates show under the field."""
+    tried, cands = False, []
     first = not progress or progress[0] == 0
-    hints = [("Enter", "next" if progress else "ok"), ("Ctrl+U", "clear"), ("Esc", "cancel" if first else "back")]
+    hints = [("Enter", "next" if progress else "ok"), *([("Tab", "complete")] if complete else []),
+             ("Ctrl+U", "clear"), ("Esc", "cancel" if first else "back")]
     while True:
         error = (validate(value.strip()) if validate and (value.strip() or tried) else None) or ""
         if not too_small(win):
@@ -425,6 +446,9 @@ def input_line(win, ui: Ui, crumb: str, label: str, value: str, validate=None, n
                 safe_addstr(win, t + 4, 2, clip("✗ " + error, min(display_width(error) + 2, bw - 4)), attr(ui, "bad"))
             elif value.strip() and validate:
                 safe_addstr(win, t + 4, 2, "✓", attr(ui, "ok"))
+            if cands:
+                c = "  ".join(cands)
+                safe_addstr(win, t + 5, 2, clip(c, min(display_width(c), bw - 4)), color("dim"))
             if note:
                 safe_addstr(win, t + 6, 2, clip(note, min(display_width(note), bw - 4)), color("dim"))
             curses.curs_set(1)
@@ -434,10 +458,13 @@ def input_line(win, ui: Ui, crumb: str, label: str, value: str, validate=None, n
                 pass
         win.refresh()
         key = win.get_wch()
+        cands = []
         if key == ESC:
             curses.curs_set(0)
             return None
-        if key in ENTER:
+        if key == "\t" and complete:
+            value, cands = complete(value)
+        elif key in ENTER:
             tried = True
             if not (validate(value.strip()) if validate else None):
                 curses.curs_set(0)
@@ -543,7 +570,8 @@ def edit_folders(win, ui: Ui, crumb: str, name: str, dirs: list[str], progress=N
             on[0], cur = True, 0
         elif key == "a":
             path = input_line(win, ui, crumb + " / add folder", "Folder path (relative to the hub, or absolute)", "",
-                              lambda v: None if v and (ui.hub / Path(v).expanduser()).is_dir() else "Enter a folder that exists")
+                              lambda v: None if v and (ui.hub / Path(v).expanduser()).is_dir() else "Enter a folder that exists",
+                              complete=lambda v: complete_dir(ui.hub, v))
             if path:
                 full = (ui.hub / Path(path).expanduser()).resolve()
                 ref = repo_ref(ui.hub, full) if full == ui.hub or full.parent == ui.hub else str(full)
@@ -869,7 +897,9 @@ def team_screen(win, hub: Path) -> Saved | None:
             if i == 0:
                 return "Project", [[("Used to find this team's workspace in herdr.", "dim")], [],
                                     [("Hub            ", "dim"), (str(hub), "")],
-                                    [("agent_args     ", "dim"), (" ".join(agent_args) or "none", "")]]
+                                    [("agent_args     ", "dim"), (" ".join(agent_args) or "none", "")],
+                                    [("master args    ", "dim"),
+                                     (" ".join(existing.master_agent_args) if existing and existing.master_agent_args else "none", "")]]
             if i == 2:
                 return "Master", master_preview(hub, project)
             if i == 1:
