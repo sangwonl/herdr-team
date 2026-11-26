@@ -705,6 +705,28 @@ esac
             assert run < start, (pane, lines)
         assert not any(l.startswith(("workspace create", "tab create")) for l in lines)
 
+        # 마스터 창에서 up 을 친 경우(그 창의 앞 프로세스가 up 자신)와, 봇 창에서 다른 프로그램이 도는 경우:
+        # 그 창에 export 를 쳐 넣지 않는다. 마스터는 up 이 끝난 뒤 띄우도록 미루고, 봇은 건너뛴다.
+        fake.write_text(fake.read_text().replace('  *) echo', """  "pane process-info") echo '{"result":{"process_info":{"foreground_process_group_id":9,"shell_pid":1,"foreground_processes":[{"argv0":"vim"}]}}}' ;;
+  *) echo"""))
+        calls.unlink()
+        later = []
+        real_later = team_mod._start_when_idle
+        team_mod._start_when_idle = lambda h, name, pane, args: later.append((name, pane))
+        os.environ["HERDR_BIN_PATH"], os.environ["HERDR_PANE_ID"] = str(fake), "w1:p1"
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                assert team_mod.up(hub) == 1
+        finally:
+            team_mod._start_when_idle = real_later
+            del os.environ["HERDR_BIN_PATH"], os.environ["HERDR_PANE_ID"]
+        lines = calls.read_text().splitlines()
+        assert later == [("p-master", "w1:p1")], later
+        assert not any(l.startswith(("pane run", "agent start")) for l in lines), lines
+        assert "master\tstarts in this pane when this command exits" in out.getvalue()
+        assert "a\tskipped: w1:p2 is running vim; quit it, then run team-up again" in out.getvalue()
+
 
 def test_python_version_check():
     from . import version_error

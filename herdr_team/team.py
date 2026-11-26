@@ -74,6 +74,44 @@ def _add_bin_to_path(pane: str) -> None:
     herdr.run("pane", "run", pane, f"export PATH={shlex.quote(str(PLUGIN_ROOT / 'bin'))}:\"$PATH\"")
 
 
+def _busy(pane: str) -> str:
+    """What holds the pane's foreground instead of its shell: "" when the shell is at its prompt,
+    "self" when it is this very command (run from that pane), else the program's name.
+    `agent start` and `pane run` need the shell; typed text would land in that program's input."""
+    info = herdr.run("pane", "process-info", "--pane", pane).get("process_info", {})
+    if info.get("foreground_process_group_id") == info.get("shell_pid"):
+        return ""
+    if os.environ.get("HERDR_PANE_ID") == pane:
+        return "self"
+    procs = info.get("foreground_processes") or [{}]
+    return procs[0].get("argv0") or procs[0].get("name") or "another program"
+
+
+def _start_when_idle(hub: Path, name: str, pane: str, args: list[str]) -> None:
+    """`up` was run in the pane the agent should take. Fork a child that waits for this command to
+    exit and the shell prompt to return, then starts the agent there. The outcome goes to the log."""
+    if os.fork():
+        return
+    os.setsid()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+    outcome = "failed: the shell did not come back within 2 minutes"
+    try:
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            if not _busy(pane):
+                _add_bin_to_path(pane)
+                outcome = _start(name, pane, args)
+                break
+    except herdr.HerdrError as e:
+        outcome = f"failed: {e.message}"
+    finally:
+        append_log(hub, "up", text=f"master {outcome}")
+        os._exit(0)
+
+
 def up(hub: Path, focus: bool = True) -> int:
     if master_only(hub, "up"):
         return 2
@@ -109,9 +147,17 @@ def up(hub: Path, focus: bool = True) -> int:
     else:
         try:
             (hub / ".herdr-team" / "MASTER.md").write_text(master_prompt(hub), encoding="utf-8")
-            if not created:
-                _add_bin_to_path(master_pane)
-            print(f"master\t{_start(master, master_pane, master_args(team))}")
+            busy = "" if created else _busy(master_pane)
+            if busy == "self":
+                _start_when_idle(hub, master, master_pane, master_args(team))
+                print("master\tstarts in this pane when this command exits")
+            elif busy:
+                failed += 1
+                print(f"master\tskipped: {master_pane} is running {busy}; quit it, then run team-up again")
+            else:
+                if not created:
+                    _add_bin_to_path(master_pane)
+                print(f"master\t{_start(master, master_pane, master_args(team))}")
         except herdr.HerdrError as e:
             failed += 1
             print(f"master\tfailed: {e.message}")
@@ -139,6 +185,12 @@ def up(hub: Path, focus: bool = True) -> int:
         try:
             if bot.name in tabs:
                 pane = next(p["pane_id"] for p in herdr.panes(ws_id) if p.get("tab_id") == tabs[bot.name])
+                busy = _busy(pane)
+                if busy:
+                    failed += 1
+                    what = "this command" if busy == "self" else busy
+                    print(f"{bot.name}\tskipped: {pane} is running {what}; quit it, then run team-up again")
+                    continue
                 _add_bin_to_path(pane)
             else:
                 pane = herdr.run("tab", "create", "--workspace", ws_id, "--cwd", str(bot_cwd(hub, bot)),
